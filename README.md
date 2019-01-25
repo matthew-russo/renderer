@@ -1,4 +1,5 @@
-# vulkano_tutorial
-Originally working off of https://github.com/bwasty/vulkan-tutorial-rs/ but now working on the TODO parts of it and will eventually contribute them ideally. this is a personally work in progress until I can properly integrate with that repository
+This is an experiment in building an ergonomic rendering engine that doesn't hide too much of the internals.
 
--> Currently working on getting uniform buffers set up.
+Eventually I'd like to make an AR windowing system / integrated desktop but for now its just working on the core render loop.
+
+More design-y rambling about different ideas in ./design_thoughts.md
