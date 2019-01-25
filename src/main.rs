@@ -77,8 +77,8 @@ mod events;
 mod primitives;
 mod utils;
 
-const WIDTH: u32 = 800;
-const HEIGHT: u32 = 600;
+const WIDTH: u32 = 1440;
+const HEIGHT: u32 = 900;
 
 const VALIDATION_LAYERS: &[&str] = &[
     "VK_LAYER_LUNARG_standard_validation",

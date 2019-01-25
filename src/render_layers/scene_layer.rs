@@ -43,6 +43,8 @@ use crate::primitives::vertex::Vertex;
 use crate::primitives::three_d::model::Model;
 use crate::primitives::three_d::model::Transform;
 
+use rand::Rng;
+
 const MODEL_PATH: &'static str = "C:\\Users\\mcr43\\IdeaProjects\\vulkan_tutorial\\src\\data\\models\\chalet.obj";
 const TEXTURE_PATH: &'static str = "C:\\Users\\mcr43\\IdeaProjects\\vulkan_tutorial\\src\\data\\textures\\chalet.jpg";
 
@@ -107,16 +109,18 @@ impl SceneLayer {
 
         // todo -> make geometry and images dynamic
         //let model = load_model(Path::new(MODEL_PATH));
-        let mut cube_one = Self::new_cube();
-        cube_one.transform.translate(glm::vec3(-0.75, 0.0, 0.0));
 
-        let mut cube_two = Self::new_cube();
-        cube_two.transform.translate(glm::vec3(0.75, 0.0, 0.0));
+        let mut models = Vec::new();
+        let mut rng = rand::thread_rng();
 
-        let models = vec![
-            cube_one,
-            cube_two
-        ];
+        for i in 0..255 {
+            let mut cube = Self::new_cube();
+            let x = rng.gen_range(-5.0, 5.0);
+            let y = rng.gen_range(-5.0, 5.0);
+            let z = rng.gen_range(-5.0, 5.0);
+            cube.transform.translate(glm::vec3(x, y, z));
+            models.push(cube);
+        }
 
         let image_view = Self::create_image_view(graphics_queue);
         let image_sampler = Self::create_image_sampler(&device);
@@ -133,7 +137,7 @@ impl SceneLayer {
             &models,
         );
 
-        SceneLayer {
+        let mut scene_layer = SceneLayer {
             render_pass: render_pass.clone(),
             device: device.clone(),
             dimensions: dimensions.clone(),
@@ -155,7 +159,11 @@ impl SceneLayer {
             need_to_rebuild_buffers: false,
 
             start_time
-        }
+        };
+
+        scene_layer.rebuild_buffers();
+
+        scene_layer
     }
 
     // todo -> move to cube.rs and make Model a trait that all standard 3d geo implements
@@ -274,23 +282,31 @@ impl SceneLayer {
             .unwrap())
     }
 
-    fn rebuild_buffers_if_necessary(&mut self, vertices: &Vec<Vertex>, indices: &Vec<u32>) {
-        if self.need_to_rebuild_buffers {
-            self.vertex_buffer = vk_creation::create_vertex_buffer(&self.graphics_queue, vertices);
-            self.index_buffer = vk_creation::create_index_buffer(&self.graphics_queue, indices);
-            self.need_to_rebuild_buffers = false;
+    fn rebuild_buffers(&mut self) {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        for (i, model) in self.models.iter().enumerate() {
+            let mut new_vertices = model.vertices.clone();
+            vertices.append(&mut new_vertices);
+
+            let mut new_indices = model.indices.iter().map(|index| *index + (4 * i as u32)).collect();
+            indices.append(&mut new_indices);
         }
+
+        self.vertex_buffer = vk_creation::create_vertex_buffer(&self.graphics_queue, &vertices);
+        self.index_buffer = vk_creation::create_index_buffer(&self.graphics_queue, &indices);
     }
 
-    fn get_vertex_buffer(&mut self, vertices: &Vec<Vertex>, indices: &Vec<u32>) -> Arc<BufferAccess + Send + Sync> {
-        self.rebuild_buffers_if_necessary(vertices, indices);
-        self.vertex_buffer.clone()
-    }
+    //fn get_vertex_buffer(&mut self, vertices: &Vec<Vertex>, indices: &Vec<u32>) -> Arc<BufferAccess + Send + Sync> {
+    //    self.rebuild_buffers_if_necessary(vertices, indices);
+    //    self.vertex_buffer.clone()
+    //}
 
-    fn get_index_buffer(&mut self, vertices: &Vec<Vertex>, indices: &Vec<u32>) -> Arc<TypedBufferAccess<Content=[u32]> + Send + Sync> {
-        self.rebuild_buffers_if_necessary(vertices, indices);
-        self.index_buffer.clone()
-    }
+    //fn get_index_buffer(&mut self, vertices: &Vec<Vertex>, indices: &Vec<u32>) -> Arc<TypedBufferAccess<Content=[u32]> + Send + Sync> {
+    //    self.rebuild_buffers_if_necessary(vertices, indices);
+    //    self.index_buffer.clone()
+    //}
 
     fn update_uniform_buffer(start_time: Instant, dimensions: [f32; 2], transform: &Transform) -> UniformBufferObject {
         let duration = Instant::now().duration_since(start_time);
@@ -308,7 +324,7 @@ impl SceneLayer {
         model = glm::ext::rotate(&model, (elapsed as f32) * glm::radians(0.180), glm::vec3(0.0, 0.5, 1.0) /*transform.rotation*/);
 
         let view = glm::ext::look_at(
-            glm::vec3(0.0, 2.0, -2.0),
+            glm::vec3(0.0, 2.0, -15.0),
             glm::vec3(0.0, 0.0, 0.0),
             glm::vec3(0.0, 1.0, 0.0)
         );
@@ -316,7 +332,7 @@ impl SceneLayer {
             glm::radians(45.0,),
             dimensions[0] as f32 / dimensions[1] as f32,
             0.1,
-            10.0
+            1000.0
         );
 
         proj.c1.y *= -1.0;
@@ -414,12 +430,6 @@ impl RenderLayer for SceneLayer {
             let push_constant = vs::ty::PushConstant {
                 value: i as u32,
             };
-
-            self.need_to_rebuild_buffers = true;
-
-            // let indices = model.indices.iter().map(|index| *index + (i as u32 * 4)).collect();
-
-            self.rebuild_buffers_if_necessary(&model.vertices, &model.indices);
 
             builder = builder.draw_indexed(
                 self.graphics_pipeline.clone(),
