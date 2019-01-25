@@ -2,9 +2,10 @@ extern crate tobj;
 
 use std::path::Path;
 use crate::primitives::vertex::Vertex;
-use crate::primitives::geometry::Geometry;
+use crate::primitives::three_d::model::Model;
+use crate::primitives::three_d::model::Transform;
 
-pub fn load_model(path: &Path) -> Geometry<Vertex> {
+pub fn load_model(path: &Path) -> Model {
     use tobj::{load_obj};
 
     let mut vertices = Vec::new();
@@ -40,7 +41,13 @@ pub fn load_model(path: &Path) -> Geometry<Vertex> {
         }
     }
 
-    Geometry::new(vertices, indices)
+    Model {
+        key: path.to_str().unwrap().to_string(),
+        vertices,
+        indices,
+
+        transform: Transform::new(),
+    }
 }
 
 //pub fn load_image() -> {

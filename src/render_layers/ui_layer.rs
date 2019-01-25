@@ -1,31 +1,38 @@
 use std::sync::{Arc, Mutex};
+use std::collections::HashSet;
 
 use vulkano::device::{Device, Queue};
-use vulkano::buffer::{TypedBufferAccess};
-use vulkano::pipeline::{GraphicsPipelineAbstract};
-use vulkano::framebuffer::RenderPassAbstract;
+use vulkano::buffer::{TypedBufferAccess, BufferAccess};
+use vulkano::framebuffer::{RenderPassAbstract, Subpass};
+use vulkano::command_buffer::{
+    DynamicState,
+    AutoCommandBufferBuilder,
+    pool::standard::StandardCommandPoolBuilder,
+};
+use vulkano::pipeline::{
+    GraphicsPipeline,
+    viewport::Viewport,
+    vertex::SingleBufferDefinition
+};
+use vulkano::descriptor::{
+    pipeline_layout::PipelineLayoutDescUnion,
+    pipeline_layout::PipelineLayout,
+    pipeline_layout::PipelineLayoutDesc,
+    descriptor::ShaderStages,
+    descriptor_set::FixedSizeDescriptorSet,
+    descriptor_set::FixedSizeDescriptorSetsPool
+};
 
-use super::render_layer::RenderLayer;
-use vulkano::descriptor::descriptor_set::FixedSizeDescriptorSetBuilder;
-use vulkano::descriptor::descriptor_set::FixedSizeDescriptorSetsPool;
-use crate::primitives::vertex::Vertex;
-use vulkano::command_buffer::DynamicState;
-use vulkano::pipeline::depth_stencil::DepthStencil;
-use vulkano::framebuffer::Subpass;
-use vulkano::pipeline::GraphicsPipeline;
-use vulkano::descriptor::pipeline_layout::PipelineLayoutDescUnion;
-use vulkano::descriptor::descriptor::ShaderStages;
-use vulkano::pipeline::viewport::Viewport;
-use vulkano::descriptor::pipeline_layout::PipelineLayoutDesc;
-use vulkano::buffer::BufferAccess;
 use crate::utils::vk_creation;
-use vulkano::descriptor::descriptor_set::DescriptorSetDesc;
-use vulkano::command_buffer::AutoCommandBufferBuilder;
-use vulkano::command_buffer::pool::standard::StandardCommandPoolBuilder;
-use vulkano::descriptor::descriptor_set::FixedSizeDescriptorSet;
 use crate::primitives;
-use vulkano::pipeline::vertex::SingleBufferDefinition;
-use vulkano::descriptor::pipeline_layout::PipelineLayout;
+use crate::primitives::vertex::Vertex;
+use crate::render_layers::render_layer::RenderLayer;
+use crate::events::application_events::ApplicationEvent;
+use crate::primitives::two_d::{
+    widget::EscMenu,
+    widget::Widget,
+    quad::Quad,
+};
 
 mod ui_vertex_shader {
     vulkano_shaders::shader! {
@@ -54,13 +61,17 @@ pub struct UiLayer {
     // descriptor_sets_pool: Arc<Mutex<FixedSizeDescriptorSetsPool<UiGraphicsPipeline>>>,
     // descriptor_set: Arc<FixedSizeDescriptorSet<UiGraphicsPipeline, ()>>,
 
-    vertices: Vec<Vertex>,
+    // vertices: HashMap<String, Vec<Vertex>>,
     vertex_buffer: Arc<BufferAccess + Send + Sync>,
 
-    indices: Vec<u32>,
+    // indices: HashMap<String, Vec<u32>>,
     index_buffer: Arc<TypedBufferAccess<Content=[u32]> + Send + Sync>,
 
     need_to_rebuild_buffers: bool,
+
+    widgets: Vec<Arc<Mutex<Widget>>>,
+
+    rendered_geometry: HashSet<Quad>,
 }
 
 impl UiLayer {
@@ -94,13 +105,14 @@ impl UiLayer {
             // descriptor_sets_pool,
             // descriptor_set,
 
-            vertices: vec![],
             vertex_buffer: vk_creation::create_vertex_buffer::<Vertex>(&graphics_queue, &vec![]),
 
-            indices: vec![],
             index_buffer: vk_creation::create_index_buffer(&graphics_queue, &vec![]),
 
             need_to_rebuild_buffers: false,
+
+            widgets: vec![Arc::new(Mutex::new(EscMenu::new()))],
+            rendered_geometry: HashSet::new(),
         }
     }
 
@@ -128,34 +140,33 @@ impl UiLayer {
     fn rebuild_buffers_if_necessary(&mut self) {
         if self.need_to_rebuild_buffers {
             println!("rebuilding buffers");
-            self.vertex_buffer = vk_creation::create_vertex_buffer(&self.graphics_queue, &self.vertices);
-            self.index_buffer = vk_creation::create_index_buffer(&self.graphics_queue, &self.indices);
+
+            let mut vertices: Vec<Vertex> = Vec::new();
+            let mut indices: Vec<u32> = Vec::new();
+
+            for geo in self.rendered_geometry.iter() {
+                vertices.append(&mut geo.vertices());
+                indices.append(&mut geo.indices());
+            }
+
+            self.vertex_buffer = vk_creation::create_vertex_buffer(&self.graphics_queue, &vertices);
+            self.index_buffer = vk_creation::create_index_buffer(&self.graphics_queue, &indices);
             self.need_to_rebuild_buffers = false;
         }
     }
 
-    fn get_vertex_buffer(&mut self) -> Arc<BufferAccess + Send + Sync> {
-        self.rebuild_buffers_if_necessary();
-        self.vertex_buffer.clone()
+    pub fn add_quad(&mut self, mut quad: Quad) {
+        if !self.rendered_geometry.contains(&quad) {
+            self.rendered_geometry.insert(quad);
+            self.need_to_rebuild_buffers = true;
+        }
     }
 
-    fn get_index_buffer(&mut self) -> Arc<TypedBufferAccess<Content=[u32]> + Send + Sync> {
-        self.rebuild_buffers_if_necessary();
-        self.index_buffer.clone()
-    }
-
-    pub fn add_geometry(&mut self, mut vertices: Vec<Vertex>, indices: Vec<u32>) {
-        let mut new_indices = indices
-            .iter()
-            .map(|i| *i + self.indices.len() as u32)
-            .collect::<Vec<u32>>();
-
-        self.vertices.append(&mut vertices);
-        self.indices.append(&mut new_indices);
-
-        println!("added geometry: {:?}, {:?}", self.vertices, self.indices);
-
-        self.need_to_rebuild_buffers = true;
+    pub fn remove_quad(&mut self, quad: Quad) {
+        if self.rendered_geometry.contains(&quad) {
+            self.rendered_geometry.remove(&quad);
+            self.need_to_rebuild_buffers = true;
+        }
     }
 
     fn create_basic_graphics_pipeline(
@@ -197,10 +208,31 @@ impl UiLayer {
             .unwrap()
         )
     }
+
+    pub fn push_events_to_widgets(&mut self, events: Vec<ApplicationEvent>) {
+        let mut need_to_rebuild_buffers = self.need_to_rebuild_buffers;
+
+        events.iter().for_each(|e|
+            self.widgets.iter().for_each(|w| need_to_rebuild_buffers = w.lock().unwrap().on(e))
+        );
+
+        self.need_to_rebuild_buffers = need_to_rebuild_buffers;
+    }
 }
 
 impl RenderLayer for UiLayer {
     fn draw_indexed(&mut self, builder: AutoCommandBufferBuilder<StandardCommandPoolBuilder>) -> AutoCommandBufferBuilder<StandardCommandPoolBuilder> {
+        let widgets = self.widgets.clone();
+        for widget in widgets.iter() {
+
+            let quad = widget.lock().unwrap().quad();
+            if quad.rendered {
+                self.add_quad(quad);
+            } else {
+                self.remove_quad(quad);
+            }
+        }
+
         self.rebuild_buffers_if_necessary();
 
         builder.draw_indexed(

@@ -12,9 +12,8 @@ extern crate winit;
 
 extern crate image;
 
-use std::sync::{Arc};
+use std::sync::{Arc, Mutex};
 use std::collections::HashSet;
-use std::io::Read;
 use std::time::Instant;
 
 use vulkano::instance::{
@@ -44,10 +43,6 @@ use vulkano::framebuffer::{
     FramebufferAbstract,
     Framebuffer,
 };
-use vulkano::descriptor::{
-    descriptor_set::DescriptorSetsCollection,
-    pipeline_layout::PipelineLayoutDesc,
-};
 use vulkano::format::{
     Format,
     ClearValue,
@@ -61,7 +56,6 @@ use vulkano::image::{
     ImageUsage,
     SwapchainImage,
     attachment::AttachmentImage,
-    traits::ImageAccess,
 };
 
 use vulkano_win::VkSurfaceBuild;
@@ -71,25 +65,15 @@ use winit::{
     WindowBuilder,
     Window,
     dpi::LogicalSize,
-    Event,
-    WindowEvent,
-    KeyboardInput,
-    MouseScrollDelta,
-    TouchPhase,
-    ModifiersState,
-    ElementState,
-    MouseButton
 };
 
-use glm::*;
-use image::GenericImageView;
 use crate::render_layers::render_layer::RenderLayer;
-use crate::primitives::vertex::Vertex;
 use crate::render_layers::scene_layer::SceneLayer;
 use crate::render_layers::ui_layer::UiLayer;
-use std::sync::Mutex;
+use crate::events::event_handler::EventHandler;
 
 mod render_layers;
+mod events;
 mod primitives;
 mod utils;
 
@@ -160,6 +144,7 @@ struct HelloTriangleApplication {
     previous_frame_end: Option<Box<GpuFuture>>,
     recreate_swap_chain: bool,
 
+    event_handler: Arc<Mutex<EventHandler>>,
 }
 
 impl HelloTriangleApplication {
@@ -207,6 +192,8 @@ impl HelloTriangleApplication {
 
         let start_time = Instant::now();
 
+        let event_handler = Arc::new(Mutex::new(EventHandler::new()));
+
         let mut app = Self {
             instance,
             debug_callback,
@@ -237,6 +224,8 @@ impl HelloTriangleApplication {
 
             previous_frame_end,
             recreate_swap_chain: false,
+
+            event_handler,
         };
 
         app
@@ -488,6 +477,7 @@ impl HelloTriangleApplication {
 
     fn create_command_buffers(&mut self) {
         let queue_family = self.graphics_queue.family();
+
         self.command_buffers = self.swap_chain_framebuffers.iter()
             .map(|framebuffer| {
                 let mut builder = AutoCommandBufferBuilder::primary_simultaneous_use(self.device.clone(), queue_family)
@@ -582,77 +572,17 @@ impl HelloTriangleApplication {
             self.create_command_buffers();
             self.draw_frame();
 
-            let mut done = false;
-
-            let ui_layer = &self.ui_layer;
+            let mut event_handler = self.event_handler.lock().unwrap();
 
             self.events_loop.poll_events(|ev| {
-                match ev {
-                    Event::WindowEvent { event, .. } => match event {
-                        WindowEvent::CloseRequested => done = true,
-                        WindowEvent::KeyboardInput { input, .. } => Self::handle_keyboard_input(input, ui_layer),
-                        WindowEvent::MouseWheel { delta, phase, modifiers, .. } => Self::handle_mouse_scroll(delta, phase, modifiers),
-                        WindowEvent::MouseInput { state, button, modifiers, .. } => Self::handle_mouse_input(state, button, modifiers),
-                        _ => (),
-                    },
-                    _ => (),
-                }
+                event_handler.queue_window_event(ev);
             });
 
-            if done {
-                return;
-            }
+            event_handler.process_window_events();
+
+            self.ui_layer.lock().unwrap().push_events_to_widgets(event_handler.application_events.drain(0..).collect());
         }
     }
-
-    fn handle_keyboard_input(input: KeyboardInput, ui_layer: &Arc<Mutex<UiLayer>>) {
-        println!("\n");
-        println!("keyboard input!");
-        println!("\tscancode {:?}", input.scancode);
-        println!("\tstate: {:?}", input.state);
-        println!("\tvirtual_keycode: {:?}", input.virtual_keycode);
-        println!("\tmodifiers: {:?}", input.modifiers);
-        println!("\n");
-
-        match input.virtual_keycode {
-            Some(winit::VirtualKeyCode::Escape) => {
-                println!("escape key hit -> adding vertices");
-
-                let new_vertices = vec![
-                    Vertex::new([-0.5, -0.5, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0]),
-                    Vertex::new([0.5, -0.5, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0]),
-                    Vertex::new([0.5, 0.5, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0]),
-                    Vertex::new([-0.5, 0.5, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0]),
-                ];
-
-                let new_indices = vec![
-                    0, 1, 2, 2, 3, 0
-                ];
-
-                ui_layer.lock().unwrap().add_geometry(new_vertices, new_indices);
-            },
-            _ => ()
-        }
-    }
-
-    fn handle_mouse_scroll(delta: MouseScrollDelta, phase: TouchPhase, modifiers: ModifiersState) {
-        println!("\n");
-        println!("mouse scroll!");
-        println!("\tdelta: {:?}", delta);
-        println!("\tphase: {:?}", phase);
-        println!("\tmodifiers: {:?}", modifiers);
-        println!("\n");
-    }
-
-    fn handle_mouse_input(state: ElementState, button: MouseButton, modifiers: ModifiersState) {
-        println!("\n");
-        println!("mouse input!");
-        println!("\tstate {:?}", state);
-        println!("\tbutton: {:?}", button);
-        println!("\tmodifiers: {:?}", modifiers);
-        println!("\n");
-    }
-
 
     fn draw_frame(&mut self) {
         self.previous_frame_end.as_mut().unwrap().cleanup_finished();

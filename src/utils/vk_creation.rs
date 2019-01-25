@@ -1,18 +1,10 @@
 use std::sync::Arc;
 
 use vulkano::pipeline::vertex::Vertex;
-use vulkano::device::{Device, Queue};
+use vulkano::device::Queue;
 use vulkano::buffer::{TypedBufferAccess};
 use vulkano::buffer::ImmutableBuffer;
 use vulkano::buffer::BufferUsage;
-use vulkano::framebuffer::RenderPassAbstract;
-use vulkano::pipeline::GraphicsPipelineAbstract;
-use vulkano::pipeline::viewport::Viewport;
-use vulkano::descriptor::descriptor::ShaderStages;
-use vulkano::pipeline::GraphicsPipeline;
-use vulkano::descriptor::pipeline_layout::PipelineLayoutDescUnion;
-use vulkano::pipeline::depth_stencil::DepthStencil;
-use vulkano::framebuffer::Subpass;
 use vulkano::sync::GpuFuture;
 use vulkano::buffer::BufferAccess;
 

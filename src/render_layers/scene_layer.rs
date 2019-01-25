@@ -1,12 +1,8 @@
 use std::sync::{Arc, Mutex};
-
-use super::render_layer::RenderLayer;
-use crate::utils::asset_loading::*;
+use std::path::Path;
 use std::time::Instant;
+
 use vulkano::buffer::TypedBufferAccess;
-use crate::primitives::vertex::Vertex;
-use vulkano::descriptor::descriptor_set::FixedSizeDescriptorSetBuilder;
-use vulkano::pipeline::GraphicsPipelineAbstract;
 use vulkano::framebuffer::RenderPassAbstract;
 use vulkano::device::Device;
 use vulkano::device::Queue;
@@ -15,7 +11,6 @@ use vulkano::sampler::Sampler;
 use vulkano::descriptor::descriptor_set::FixedSizeDescriptorSetsPool;
 use vulkano::image::Dimensions;
 use vulkano::command_buffer::DynamicState;
-use crate::utils::vk_creation;
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::descriptor::descriptor::ShaderStages;
 use vulkano::descriptor::pipeline_layout::PipelineLayoutDescUnion;
@@ -23,24 +18,30 @@ use vulkano::pipeline::GraphicsPipeline;
 use vulkano::pipeline::depth_stencil::DepthStencil;
 use vulkano::framebuffer::Subpass;
 use vulkano::format::Format;
-use vulkano::descriptor::descriptor_set::DescriptorSetDesc;
 use vulkano::descriptor::pipeline_layout::PipelineLayoutDesc;
 use vulkano::sync::GpuFuture;
-use image::GenericImageView;
-use std::path::Path;
 use vulkano::buffer::BufferAccess;
 use vulkano::buffer::ImmutableBuffer;
 use vulkano::buffer::BufferUsage;
-use crate::primitives::uniform_buffer_object::UniformBufferObject;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::pool::standard::StandardCommandPoolBuilder;
 use vulkano::descriptor::descriptor_set::FixedSizeDescriptorSet;
-use crate::primitives;
 use vulkano::pipeline::vertex::SingleBufferDefinition;
 use vulkano::descriptor::pipeline_layout::PipelineLayout;
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSetBuf;
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSetImg;
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSetSampler;
+
+use image::GenericImageView;
+
+use crate::primitives;
+use crate::primitives::uniform_buffer_object::UniformBufferObject;
+use crate::render_layers::render_layer::RenderLayer;
+use crate::utils::asset_loading::*;
+use crate::utils::vk_creation;
+use crate::primitives::vertex::Vertex;
+use crate::primitives::three_d::model::Model;
+use crate::primitives::three_d::model::Transform;
 
 const MODEL_PATH: &'static str = "C:\\Users\\mcr43\\IdeaProjects\\vulkan_tutorial\\src\\data\\models\\chalet.obj";
 const TEXTURE_PATH: &'static str = "C:\\Users\\mcr43\\IdeaProjects\\vulkan_tutorial\\src\\data\\textures\\chalet.jpg";
@@ -70,7 +71,7 @@ pub struct SceneLayer {
     graphics_pipeline: Arc<SceneGraphicsPipeline>,
 
     descriptor_sets_pool: Arc<Mutex<FixedSizeDescriptorSetsPool<Arc<SceneGraphicsPipeline>>>>,
-    descriptor_set: Arc<FixedSizeDescriptorSet<Arc<SceneGraphicsPipeline>, ((((), PersistentDescriptorSetBuf<Arc<ImmutableBuffer<UniformBufferObject>>>), PersistentDescriptorSetImg<Arc<ImmutableImage<Format>>>), PersistentDescriptorSetSampler)>>,
+    descriptor_set: Arc<FixedSizeDescriptorSet<Arc<SceneGraphicsPipeline>, ((((), PersistentDescriptorSetBuf<Arc<ImmutableBuffer<[UniformBufferObject; 256]>>>), PersistentDescriptorSetImg<Arc<ImmutableImage<Format>>>), PersistentDescriptorSetSampler)>>,
 
     // todo ->
     // uniform_buffers: Vec<UniformBufferObject>,
@@ -79,10 +80,9 @@ pub struct SceneLayer {
     image_view: Arc<ImmutableImage<Format>>,
     image_sampler: Arc<Sampler>,
 
-    vertices: Vec<Vertex>,
-    vertex_buffer: Arc<BufferAccess + Send + Sync>,
+    models: Vec<Model>,
 
-    indices: Vec<u32>,
+    vertex_buffer: Arc<BufferAccess + Send + Sync>,
     index_buffer: Arc<TypedBufferAccess<Content=[u32]> + Send + Sync>,
 
     need_to_rebuild_buffers: bool,
@@ -106,7 +106,18 @@ impl SceneLayer {
         );
 
         // todo -> make geometry and images dynamic
-        let geometry = load_model(Path::new(MODEL_PATH));
+        //let model = load_model(Path::new(MODEL_PATH));
+        let mut cube_one = Self::new_cube();
+        cube_one.transform.translate(glm::vec3(-0.75, 0.0, 0.0));
+
+        let mut cube_two = Self::new_cube();
+        cube_two.transform.translate(glm::vec3(0.75, 0.0, 0.0));
+
+        let models = vec![
+            cube_one,
+            cube_two
+        ];
+
         let image_view = Self::create_image_view(graphics_queue);
         let image_sampler = Self::create_image_sampler(&device);
 
@@ -119,6 +130,7 @@ impl SceneLayer {
             &image_sampler,
             start_time,
             dimensions,
+            &models,
         );
 
         SceneLayer {
@@ -135,15 +147,88 @@ impl SceneLayer {
             image_view,
             image_sampler,
 
-            vertices: geometry.vertices.clone(),
-            vertex_buffer: vk_creation::create_vertex_buffer(graphics_queue, &geometry.vertices),
+            models,
 
-            indices: geometry.indices.clone(),
-            index_buffer: vk_creation::create_index_buffer(graphics_queue, &geometry.indices),
+            vertex_buffer: vk_creation::create_vertex_buffer(graphics_queue, &vec![Vertex::new([1.0,1.0,1.0],[1.0,1.0,1.0],[1.0,1.0])]),
+            index_buffer: vk_creation::create_index_buffer(graphics_queue, &vec![0]),
 
             need_to_rebuild_buffers: false,
 
             start_time
+        }
+    }
+
+    // todo -> move to cube.rs and make Model a trait that all standard 3d geo implements
+    fn new_cube() -> Model {
+        let red = [1.0, 0.0, 0.0];
+        let green = [0.0, 1.0, 0.0];
+        let blue = [0.0, 0.0, 1.0];
+
+        let yellow = [1.0, 1.0, 0.0];
+        let purple = [1.0, 0.0, 1.0];
+        let blue_green = [0.0, 1.0, 1.0];
+
+        let lower_x = -0.5;
+        let lower_y = -0.5;
+        let lower_z = -0.5;
+        let upper_x = 0.5;
+        let upper_y = 0.5;
+        let upper_z = 0.5;
+
+
+        let vertices = vec![
+            // back face
+            Vertex::new([lower_x, lower_y, lower_z], red, [0.0, 0.0]),
+            Vertex::new([lower_x, upper_y, lower_z], red, [1.0, 0.0]),
+            Vertex::new([upper_x, upper_y, lower_z], red, [1.0, 1.0]),
+            Vertex::new([upper_x, lower_y, lower_z], red, [0.0, 1.0]),
+
+            // front face
+            Vertex::new([lower_x, lower_y, upper_z], green, [0.0, 0.0]),
+            Vertex::new([upper_x, lower_y, upper_z], green, [1.0, 0.0]),
+            Vertex::new([upper_x, upper_y, upper_z], green, [1.0, 1.0]),
+            Vertex::new([lower_x, upper_y, upper_z], green, [0.0, 1.0]),
+
+            // left face
+            Vertex::new([lower_x, lower_y, upper_z], blue, [0.0, 0.0]),
+            Vertex::new([lower_x, upper_y, upper_z], blue, [1.0, 0.0]),
+            Vertex::new([lower_x, upper_y, lower_z], blue, [1.0, 1.0]),
+            Vertex::new([lower_x, lower_y, lower_z], blue, [0.0, 1.0]),
+
+            // right face
+            Vertex::new([upper_x, lower_y, upper_z], yellow, [0.0, 0.0]),
+            Vertex::new([upper_x, lower_y, lower_z], yellow, [1.0, 0.0]),
+            Vertex::new([upper_x, upper_y, lower_z], yellow, [1.0, 1.0]),
+            Vertex::new([upper_x, upper_y, upper_z], yellow, [0.0, 1.0]),
+
+            // top face
+            Vertex::new([lower_x, upper_y, upper_z], purple, [0.0, 0.0]),
+            Vertex::new([upper_x, upper_y, upper_z], purple, [1.0, 0.0]),
+            Vertex::new([upper_x, upper_y, lower_z], purple, [1.0, 1.0]),
+            Vertex::new([lower_x, upper_y, lower_z], purple, [0.0, 1.0]),
+
+            // bottom face
+            Vertex::new([lower_x, lower_y, upper_z], blue_green, [0.0, 0.0]),
+            Vertex::new([lower_x, lower_y, lower_z], blue_green, [1.0, 0.0]),
+            Vertex::new([upper_x, lower_y, lower_z], blue_green, [1.0, 1.0]),
+            Vertex::new([upper_x, lower_y, upper_z], blue_green, [0.0, 1.0]),
+        ];
+
+        let indices = vec![
+            0, 1, 2, 2, 3, 0,
+            4, 5, 6, 6, 7, 4,
+            8, 9, 10, 10, 11, 8,
+            12, 13, 14, 14, 15, 12,
+            16, 17, 18, 18, 19, 16,
+            20, 21, 22, 22, 23, 20,
+        ];
+
+        Model {
+            key: "cube".to_string(),
+            vertices,
+            indices,
+
+            transform: Transform::new()
         }
     }
 
@@ -165,44 +250,49 @@ impl SceneLayer {
         image_view: &Arc<ImmutableImage<Format>>,
         image_sampler: &Arc<Sampler>,
         start_time: Instant,
-        dimensions: [f32; 2]
-    ) -> Arc<FixedSizeDescriptorSet<Arc<SceneGraphicsPipeline>, ((((), PersistentDescriptorSetBuf<Arc<ImmutableBuffer<UniformBufferObject>>>), PersistentDescriptorSetImg<Arc<ImmutableImage<Format>>>), PersistentDescriptorSetSampler)>> {
+        dimensions: [f32; 2],
+        models: &Vec<Model>
+    ) -> Arc<FixedSizeDescriptorSet<Arc<SceneGraphicsPipeline>, ((((), PersistentDescriptorSetBuf<Arc<ImmutableBuffer<[UniformBufferObject; 256]>>>), PersistentDescriptorSetImg<Arc<ImmutableImage<Format>>>), PersistentDescriptorSetSampler)>> {
+        let mut ubos: [UniformBufferObject; 256] = [Self::update_uniform_buffer(start_time, dimensions, &Transform::new()); 256];
+
+        for (i, model) in models.iter().enumerate() {
+           ubos[i] = Self::update_uniform_buffer(start_time, dimensions, &model.transform);
+        }
+
         let (buffer, future) = ImmutableBuffer::from_data(
-            Self::update_uniform_buffer(start_time, dimensions),
-            BufferUsage::uniform_buffer(),
-            graphics_queue.clone()
+           ubos,
+           BufferUsage::uniform_buffer(),
+           graphics_queue.clone()
         ).unwrap();
 
         future.flush().unwrap();
 
         Arc::new(pool.lock().unwrap().next()
-            .add_buffer(buffer)
-            .unwrap()
-            .add_sampled_image(image_view.clone(), image_sampler.clone())
-            .unwrap()
+            .add_buffer(buffer).unwrap()
+            .add_sampled_image(image_view.clone(), image_sampler.clone()) .unwrap()
             .build()
             .unwrap())
     }
 
-    fn rebuild_buffers_if_necessary(&mut self) {
+    fn rebuild_buffers_if_necessary(&mut self, vertices: &Vec<Vertex>, indices: &Vec<u32>) {
         if self.need_to_rebuild_buffers {
-            self.vertex_buffer = vk_creation::create_vertex_buffer(&self.graphics_queue, &self.vertices);
-            self.index_buffer = vk_creation::create_index_buffer(&self.graphics_queue, &self.indices);
+            self.vertex_buffer = vk_creation::create_vertex_buffer(&self.graphics_queue, vertices);
+            self.index_buffer = vk_creation::create_index_buffer(&self.graphics_queue, indices);
             self.need_to_rebuild_buffers = false;
         }
     }
 
-    fn get_vertex_buffer(&mut self) -> Arc<BufferAccess + Send + Sync> {
-        self.rebuild_buffers_if_necessary();
+    fn get_vertex_buffer(&mut self, vertices: &Vec<Vertex>, indices: &Vec<u32>) -> Arc<BufferAccess + Send + Sync> {
+        self.rebuild_buffers_if_necessary(vertices, indices);
         self.vertex_buffer.clone()
     }
 
-    fn get_index_buffer(&mut self) -> Arc<TypedBufferAccess<Content=[u32]> + Send + Sync> {
-        self.rebuild_buffers_if_necessary();
+    fn get_index_buffer(&mut self, vertices: &Vec<Vertex>, indices: &Vec<u32>) -> Arc<TypedBufferAccess<Content=[u32]> + Send + Sync> {
+        self.rebuild_buffers_if_necessary(vertices, indices);
         self.index_buffer.clone()
     }
 
-    fn update_uniform_buffer(start_time: Instant, dimensions: [f32; 2]) -> UniformBufferObject {
+    fn update_uniform_buffer(start_time: Instant, dimensions: [f32; 2], transform: &Transform) -> UniformBufferObject {
         let duration = Instant::now().duration_since(start_time);
         let elapsed = duration.as_millis();
 
@@ -213,12 +303,14 @@ impl SceneLayer {
             0.0, 0.0, 0.0, 1.0,
         );
 
-        let model = glm::ext::rotate(&identity_matrix, (elapsed as f32) * glm::radians(0.180), glm::vec3(0.0, 0.0, 1.00));
+        let mut model = glm::ext::translate(&identity_matrix, transform.position);
+        model = glm::ext::scale(&model, transform.scale);
+        model = glm::ext::rotate(&model, (elapsed as f32) * glm::radians(0.180), glm::vec3(0.0, 0.5, 1.0) /*transform.rotation*/);
 
         let view = glm::ext::look_at(
-            glm::vec3(2.0, 2.0, 2.0),
+            glm::vec3(0.0, 2.0, -2.0),
             glm::vec3(0.0, 0.0, 0.0),
-            glm::vec3(0.0, 0.0, 1.0)
+            glm::vec3(0.0, 1.0, 0.0)
         );
         let mut proj = glm::ext::perspective(
             glm::radians(45.0,),
@@ -299,25 +391,47 @@ impl SceneLayer {
     }
 }
 
+#[repr(C)]
+struct PushConstant {
+    value: u32,
+}
+
 impl RenderLayer for SceneLayer {
-    fn draw_indexed(&mut self, builder: AutoCommandBufferBuilder<StandardCommandPoolBuilder>) -> AutoCommandBufferBuilder<StandardCommandPoolBuilder> {
+    fn draw_indexed(&mut self, mut builder: AutoCommandBufferBuilder<StandardCommandPoolBuilder>) -> AutoCommandBufferBuilder<StandardCommandPoolBuilder> {
         self.descriptor_set = Self::build_descriptor_set(
             &self.graphics_queue,
             self.descriptor_sets_pool.clone(),
             &self.image_view,
             &self.image_sampler,
             self.start_time,
-            self.dimensions,
+            self.dimensions.clone(),
+            &self.models
         );
 
-        builder.draw_indexed(
-           self.graphics_pipeline.clone(),
-            &DynamicState::none(),
-            vec![self.vertex_buffer.clone()],
-            self.index_buffer.clone(),
-            self.descriptor_set.clone(),
-           ()
-        ).unwrap()
+        let models = self.models.clone();
+
+        for (i, model) in models.iter().enumerate() {
+            let push_constant = vs::ty::PushConstant {
+                value: i as u32,
+            };
+
+            self.need_to_rebuild_buffers = true;
+
+            // let indices = model.indices.iter().map(|index| *index + (i as u32 * 4)).collect();
+
+            self.rebuild_buffers_if_necessary(&model.vertices, &model.indices);
+
+            builder = builder.draw_indexed(
+                self.graphics_pipeline.clone(),
+                &DynamicState::none(),
+                vec![self.vertex_buffer.clone()],
+                self.index_buffer.clone(),
+                self.descriptor_set.clone(),
+                push_constant
+            ).unwrap()
+        }
+
+        builder
     }
 
     fn recreate_graphics_pipeline(&mut self) {

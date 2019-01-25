@@ -1,5 +1,6 @@
 use glm::Mat4;
 
+#[derive(Clone, Copy)]
 pub struct UniformBufferObject {
     model: Mat4,
     view: Mat4,
