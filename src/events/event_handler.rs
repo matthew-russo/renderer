@@ -10,11 +10,19 @@ use winit::{
     TouchPhase,
     MouseScrollDelta,
     KeyboardInput,
+    VirtualKeyCode,
+};
+
+use specs::{
+    World,
+    Join,
 };
 
 use crate::events::application_events::ApplicationEvent;
 use crate::events::application_events::KeyPress;
 use crate::primitives::two_d::widget::Widget;
+use crate::components::camera::Camera;
+use crate::components::transform::Transform;
 
 // This struct takes all incoming window events and converts them to application events to be passed down to widgets
 pub struct EventHandler {
@@ -105,17 +113,71 @@ impl EventHandler {
         println!("\n");
 
         return match input.virtual_keycode {
-            Some(winit::VirtualKeyCode::Escape) => {
+            Some(key_code) => {
+                let key_press = match key_code {
+                    VirtualKeyCode::A => Some(KeyPress::A),
+                    VirtualKeyCode::D => Some(KeyPress::D),
+                    VirtualKeyCode::S => Some(KeyPress::S),
+                    VirtualKeyCode::W => Some(KeyPress::W),
+                    VirtualKeyCode::Escape => Some(KeyPress::EscKey),
+                    VirtualKeyCode::Space => Some(KeyPress::Space),
+                    VirtualKeyCode::LShift => Some(KeyPress::LShift),
+                    _ => None,
+                };
+
                 println!("escape key hit -> adding vertices");
 
                 // ui_layer.lock().unwrap().add_geometry(new_vertices, new_indices);
                 return if input.state == winit::ElementState::Released {
-                    vec![ApplicationEvent::KeyPress(KeyPress::EscKey)]
+                    match key_press {
+                        Some(k) => vec![ApplicationEvent::KeyPress(k)],
+                        None => vec![]
+                    }
                 } else {
                     vec![]
                 }
             },
             _ => vec![],
+        }
+    }
+
+    pub fn handle_events(&mut self, world: &World) {
+        for event in self.application_events.drain(0..) {
+            match event {
+                ApplicationEvent::KeyPress(key) => match key {
+                    KeyPress::EscKey => {},
+                    KeyPress::W => {
+                        for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                            transform.translate(glm::vec3(0.0, 0.0, 1.0));
+                        }
+                    },
+                    KeyPress::A => {
+                        for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                            transform.translate(glm::vec3(-1.0, 0.0, 0.0));
+                        }
+                    },
+                    KeyPress::S => {
+                        for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                            transform.translate(glm::vec3(0.0, 0.0, -1.0));
+                        }
+                    },
+                    KeyPress::D => {
+                        for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                            transform.translate(glm::vec3(1.0, 0.0, 0.0));
+                        }
+                    },
+                    KeyPress::Space => {
+                        for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                            transform.translate(glm::vec3(0.0, 1.0, 0.0));
+                        }
+                    },
+                    KeyPress::LShift => {
+                        for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                            transform.translate(glm::vec3(0.0, -1.0, 0.0));
+                        }
+                    },
+                },
+            }
         }
     }
 

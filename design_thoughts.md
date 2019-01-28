@@ -5,6 +5,24 @@ this is a log of my ideas, somewhat documentation, and rambling arguments with m
 - vr native windowing and interface engine
 - ergonomic api that is easy to use at a high level but doesn't block access to making unique low level decisions. I don't want this to be another super high level generic engine.
 
+## Scaling to a usable engine
+At this point I have a really basic render loop, multiple layers of rendering, a way to arbitrarily add and remove things
+from the rendered images, and a way to react to window events. I have them, but they are horrible to work with and are
+not at all practical. The current state is clearly a result of me figuring it out as I go.
+
+There are now to main concerns
+ - how do i ergonomically work with the things I want to render
+ - how do i efficiently render those things
+ 
+ and ideally they are not at all related. While creating things to actually render and manipulate, I don't want to deal
+ with worrying about buffers and pipelines and all that. I want to create a thing maybe with a texture, maybe without,
+ maybe with some other property, maybe without, and maybe update that thing when i hit a key or provide some input. And when I'm rendering
+ I want to not have to deal with all the user bullshit of state and events and input. I just want textures, vertices, indices
+ and how they're all tied together which leads to two main things:
+ 
+ - an ECS front-end to facilitate performant world management
+ - a rendering backend based on a a render graph (https://github.com/gfx-rs/gfx/wiki/Frame-graphs)
+
 ## Concepts 
 ### RenderLayers
 These represent a draw on the window --
@@ -53,3 +71,6 @@ The different ways I can think of handling this are:
  
  ### TODO
   - an efficient way of building ubo arrays
+  
+  
+e

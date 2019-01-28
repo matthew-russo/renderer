@@ -41,9 +41,9 @@ use crate::utils::asset_loading::*;
 use crate::utils::vk_creation;
 use crate::primitives::vertex::Vertex;
 use crate::primitives::three_d::model::Model;
-use crate::primitives::three_d::model::Transform;
 
 use rand::Rng;
+use crate::components::transform::Transform;
 
 const MODEL_PATH: &'static str = "C:\\Users\\mcr43\\IdeaProjects\\vulkan_tutorial\\src\\data\\models\\chalet.obj";
 const TEXTURE_PATH: &'static str = "C:\\Users\\mcr43\\IdeaProjects\\vulkan_tutorial\\src\\data\\textures\\chalet.jpg";
@@ -82,7 +82,12 @@ pub struct SceneLayer {
     image_view: Arc<ImmutableImage<Format>>,
     image_sampler: Arc<Sampler>,
 
+    pub camera_transform: Transform,
+
     models: Vec<Model>,
+
+    vertices: Vec<Vertex>,
+    indices: Vec<u32>,
 
     vertex_buffer: Arc<BufferAccess + Send + Sync>,
     index_buffer: Arc<TypedBufferAccess<Content=[u32]> + Send + Sync>,
@@ -111,16 +116,7 @@ impl SceneLayer {
         //let model = load_model(Path::new(MODEL_PATH));
 
         let mut models = Vec::new();
-        let mut rng = rand::thread_rng();
 
-        for i in 0..255 {
-            let mut cube = Self::new_cube();
-            let x = rng.gen_range(-5.0, 5.0);
-            let y = rng.gen_range(-5.0, 5.0);
-            let z = rng.gen_range(-5.0, 5.0);
-            cube.transform.translate(glm::vec3(x, y, z));
-            models.push(cube);
-        }
 
         let image_view = Self::create_image_view(graphics_queue);
         let image_sampler = Self::create_image_sampler(&device);
@@ -135,6 +131,7 @@ impl SceneLayer {
             start_time,
             dimensions,
             &models,
+            &Transform::new(),
         );
 
         let mut scene_layer = SceneLayer {
@@ -151,7 +148,12 @@ impl SceneLayer {
             image_view,
             image_sampler,
 
+            camera_transform: Transform::new(),
+
             models,
+
+            vertices: vec![],
+            indices: vec![],
 
             vertex_buffer: vk_creation::create_vertex_buffer(graphics_queue, &vec![Vertex::new([1.0,1.0,1.0],[1.0,1.0,1.0],[1.0,1.0])]),
             index_buffer: vk_creation::create_index_buffer(graphics_queue, &vec![0]),
@@ -161,83 +163,7 @@ impl SceneLayer {
             start_time
         };
 
-        scene_layer.rebuild_buffers();
-
         scene_layer
-    }
-
-    // todo -> move to cube.rs and make Model a trait that all standard 3d geo implements
-    fn new_cube() -> Model {
-        let red = [1.0, 0.0, 0.0];
-        let green = [0.0, 1.0, 0.0];
-        let blue = [0.0, 0.0, 1.0];
-
-        let yellow = [1.0, 1.0, 0.0];
-        let purple = [1.0, 0.0, 1.0];
-        let blue_green = [0.0, 1.0, 1.0];
-
-        let lower_x = -0.5;
-        let lower_y = -0.5;
-        let lower_z = -0.5;
-        let upper_x = 0.5;
-        let upper_y = 0.5;
-        let upper_z = 0.5;
-
-
-        let vertices = vec![
-            // back face
-            Vertex::new([lower_x, lower_y, lower_z], red, [0.0, 0.0]),
-            Vertex::new([lower_x, upper_y, lower_z], red, [1.0, 0.0]),
-            Vertex::new([upper_x, upper_y, lower_z], red, [1.0, 1.0]),
-            Vertex::new([upper_x, lower_y, lower_z], red, [0.0, 1.0]),
-
-            // front face
-            Vertex::new([lower_x, lower_y, upper_z], green, [0.0, 0.0]),
-            Vertex::new([upper_x, lower_y, upper_z], green, [1.0, 0.0]),
-            Vertex::new([upper_x, upper_y, upper_z], green, [1.0, 1.0]),
-            Vertex::new([lower_x, upper_y, upper_z], green, [0.0, 1.0]),
-
-            // left face
-            Vertex::new([lower_x, lower_y, upper_z], blue, [0.0, 0.0]),
-            Vertex::new([lower_x, upper_y, upper_z], blue, [1.0, 0.0]),
-            Vertex::new([lower_x, upper_y, lower_z], blue, [1.0, 1.0]),
-            Vertex::new([lower_x, lower_y, lower_z], blue, [0.0, 1.0]),
-
-            // right face
-            Vertex::new([upper_x, lower_y, upper_z], yellow, [0.0, 0.0]),
-            Vertex::new([upper_x, lower_y, lower_z], yellow, [1.0, 0.0]),
-            Vertex::new([upper_x, upper_y, lower_z], yellow, [1.0, 1.0]),
-            Vertex::new([upper_x, upper_y, upper_z], yellow, [0.0, 1.0]),
-
-            // top face
-            Vertex::new([lower_x, upper_y, upper_z], purple, [0.0, 0.0]),
-            Vertex::new([upper_x, upper_y, upper_z], purple, [1.0, 0.0]),
-            Vertex::new([upper_x, upper_y, lower_z], purple, [1.0, 1.0]),
-            Vertex::new([lower_x, upper_y, lower_z], purple, [0.0, 1.0]),
-
-            // bottom face
-            Vertex::new([lower_x, lower_y, upper_z], blue_green, [0.0, 0.0]),
-            Vertex::new([lower_x, lower_y, lower_z], blue_green, [1.0, 0.0]),
-            Vertex::new([upper_x, lower_y, lower_z], blue_green, [1.0, 1.0]),
-            Vertex::new([upper_x, lower_y, upper_z], blue_green, [0.0, 1.0]),
-        ];
-
-        let indices = vec![
-            0, 1, 2, 2, 3, 0,
-            4, 5, 6, 6, 7, 4,
-            8, 9, 10, 10, 11, 8,
-            12, 13, 14, 14, 15, 12,
-            16, 17, 18, 18, 19, 16,
-            20, 21, 22, 22, 23, 20,
-        ];
-
-        Model {
-            key: "cube".to_string(),
-            vertices,
-            indices,
-
-            transform: Transform::new()
-        }
     }
 
     fn create_graphics_pipeline(
@@ -259,12 +185,13 @@ impl SceneLayer {
         image_sampler: &Arc<Sampler>,
         start_time: Instant,
         dimensions: [f32; 2],
-        models: &Vec<Model>
+        models: &Vec<Model>,
+        camera_transform: &Transform,
     ) -> Arc<FixedSizeDescriptorSet<Arc<SceneGraphicsPipeline>, ((((), PersistentDescriptorSetBuf<Arc<ImmutableBuffer<[UniformBufferObject; 256]>>>), PersistentDescriptorSetImg<Arc<ImmutableImage<Format>>>), PersistentDescriptorSetSampler)>> {
-        let mut ubos: [UniformBufferObject; 256] = [Self::update_uniform_buffer(start_time, dimensions, &Transform::new()); 256];
+        let mut ubos: [UniformBufferObject; 256] = [Self::update_uniform_buffer(start_time, dimensions, &Transform::new(), camera_transform); 256];
 
         for (i, model) in models.iter().enumerate() {
-           ubos[i] = Self::update_uniform_buffer(start_time, dimensions, &model.transform);
+           ubos[i] = Self::update_uniform_buffer(start_time, dimensions, &model.transform, camera_transform);
         }
 
         let (buffer, future) = ImmutableBuffer::from_data(
@@ -282,33 +209,7 @@ impl SceneLayer {
             .unwrap())
     }
 
-    fn rebuild_buffers(&mut self) {
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-
-        for (i, model) in self.models.iter().enumerate() {
-            let mut new_vertices = model.vertices.clone();
-            vertices.append(&mut new_vertices);
-
-            let mut new_indices = model.indices.iter().map(|index| *index + (4 * i as u32)).collect();
-            indices.append(&mut new_indices);
-        }
-
-        self.vertex_buffer = vk_creation::create_vertex_buffer(&self.graphics_queue, &vertices);
-        self.index_buffer = vk_creation::create_index_buffer(&self.graphics_queue, &indices);
-    }
-
-    //fn get_vertex_buffer(&mut self, vertices: &Vec<Vertex>, indices: &Vec<u32>) -> Arc<BufferAccess + Send + Sync> {
-    //    self.rebuild_buffers_if_necessary(vertices, indices);
-    //    self.vertex_buffer.clone()
-    //}
-
-    //fn get_index_buffer(&mut self, vertices: &Vec<Vertex>, indices: &Vec<u32>) -> Arc<TypedBufferAccess<Content=[u32]> + Send + Sync> {
-    //    self.rebuild_buffers_if_necessary(vertices, indices);
-    //    self.index_buffer.clone()
-    //}
-
-    fn update_uniform_buffer(start_time: Instant, dimensions: [f32; 2], transform: &Transform) -> UniformBufferObject {
+    fn update_uniform_buffer(start_time: Instant, dimensions: [f32; 2], model_transform: &Transform, camera_transform: &Transform) -> UniformBufferObject {
         let duration = Instant::now().duration_since(start_time);
         let elapsed = duration.as_millis();
 
@@ -319,15 +220,17 @@ impl SceneLayer {
             0.0, 0.0, 0.0, 1.0,
         );
 
-        let mut model = glm::ext::translate(&identity_matrix, transform.position);
-        model = glm::ext::scale(&model, transform.scale);
-        model = glm::ext::rotate(&model, (elapsed as f32) * glm::radians(0.180), glm::vec3(0.0, 0.5, 1.0) /*transform.rotation*/);
+        let mut model = glm::ext::translate(&identity_matrix, model_transform.position);
+        model = glm::ext::scale(&model, model_transform.scale);
+        model = glm::ext::rotate(&model, (elapsed as f32) * glm::radians(0.180), glm::vec3(0.0, 0.5, 1.0) /*model_transform.rotation*/);
 
+        let position = camera_transform.position;
         let view = glm::ext::look_at(
-            glm::vec3(0.0, 2.0, -15.0),
+            glm::vec3(position.x, position.y, position.z),
             glm::vec3(0.0, 0.0, 0.0),
             glm::vec3(0.0, 1.0, 0.0)
         );
+
         let mut proj = glm::ext::perspective(
             glm::radians(45.0,),
             dimensions[0] as f32 / dimensions[1] as f32,
@@ -405,6 +308,30 @@ impl SceneLayer {
             .unwrap()
         )
     }
+
+
+    pub fn add_models(&mut self, mut models: Vec<Model>) {
+        let mut prev_max_index = match self.indices.iter().max() {
+            Some(max) => *max,
+            None => 0,
+        };
+
+        for model in models.iter() {
+            self.vertices.append(&mut model.vertices.iter().cloned().collect());
+
+            // todo -> normalize model indices to start at 0.
+            let mut max_model_index = model.indices.iter().max().unwrap();
+
+            let mut model_indices = model.indices.iter().map(|i| *i + max_model_index + 1).collect();
+            self.indices.append(&mut model_indices);
+
+            prev_max_index = prev_max_index + max_model_index;
+        }
+
+        self.vertex_buffer = vk_creation::create_vertex_buffer(&self.graphics_queue, &self.vertices);
+        self.index_buffer = vk_creation::create_index_buffer(&self.graphics_queue, &self.indices);
+        self.models.append(&mut models);
+    }
 }
 
 #[repr(C)]
@@ -421,7 +348,8 @@ impl RenderLayer for SceneLayer {
             &self.image_sampler,
             self.start_time,
             self.dimensions.clone(),
-            &self.models
+            &self.models,
+            &self.camera_transform,
         );
 
         let models = self.models.clone();

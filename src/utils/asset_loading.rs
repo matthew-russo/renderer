@@ -3,7 +3,7 @@ extern crate tobj;
 use std::path::Path;
 use crate::primitives::vertex::Vertex;
 use crate::primitives::three_d::model::Model;
-use crate::primitives::three_d::model::Transform;
+use crate::components::transform::Transform;
 
 pub fn load_model(path: &Path) -> Model {
     use tobj::{load_obj};
