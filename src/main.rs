@@ -42,6 +42,7 @@ use crate::components::mesh::Mesh;
 use crate::components::transform::Transform;
 use crate::primitives::three_d::cube::Cube;
 use crate::components::camera::Camera;
+use crate::timing::Time;
 
 fn main() {
     let mut app = HelloTriangleApplication::initialize();
@@ -81,6 +82,7 @@ fn main() {
 
     app.create_scene_vertex_buffers((&world.read_storage::<Transform>(), &world.read_storage::<Mesh>()).join().collect());
 
+    let mut time = Time::new();
     loop {
         // pull in events from windowing system
         app.events_loop.poll_events(|ev| {
@@ -94,6 +96,9 @@ fn main() {
         // update the systems
         dispatcher.dispatch(&world.res);
         world.maintain();
+
+        // update frame timing
+        time.tick();
 
         // actually render the screen
         // let added_meshes = (world.read_storage::<AddedMesh>(), world.read_storage::<Transform>(), world.read_storage::<Mesh>()).join();
