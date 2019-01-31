@@ -9,13 +9,16 @@ vulkano = "0.11.1"
 vulkano-win = "0.11.1"
 vulkano-shaders = "0.11.1"
 vulkano-shader-derive = "0.11.0"
+
 winit = "0.18.0"
-glm = "0.2.3"
+
 stb_image = "0.2.2"
 image = "0.20.1"
 tobj = "0.1.6"
-rand = "0.6.4"
+
 
 specs = "0.14.3"
 
+cgmath = "0.17.0"
+rand = "0.6.4"
 uuid = { version = "0.7", features = ["v4"] }

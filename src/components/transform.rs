@@ -3,11 +3,18 @@ use specs::{
     Component,
 };
 
+use cgmath::{
+    Vector3,
+    Quaternion,
+    Euler,
+    Deg,
+};
+
 #[derive(Clone)]
 pub struct Transform {
-    pub position: glm::Vec3,
-    pub scale: glm::Vec3,
-    pub rotation: glm::Vec3,
+    pub position: Vector3<f32>,
+    pub scale: Vector3<f32>,
+    pub rotation: Quaternion<f32>,
 }
 
 impl Component for Transform {
@@ -17,14 +24,25 @@ impl Component for Transform {
 impl Transform {
     pub fn new() -> Transform {
         Transform {
-            position: glm::Vec3 {x: 0.0, y: 0.0, z: 0.0},
-            scale: glm::Vec3 {x: 1.0, y: 1.0, z: 1.0},
-            rotation: glm::Vec3 {x: 0.0, y: 0.0, z: 0.0},
+            position: Vector3::new(0.0, 0.0, 0.0),
+            scale: Vector3::new(1.0, 1.0, 1.0),
+            rotation: Quaternion::from(Euler { x: Deg(0.0), y: Deg(0.0), z: Deg(0.0) }),
         }
     }
 
     // todo -> this should probably just take 3 params: x, y, and z since thats more intuitive
-    pub fn translate(&mut self, to_move: glm::Vec3) {
+    pub fn translate(&mut self, to_move: Vector3<f32>) {
         self.position = self.position +  to_move;
+    }
+
+    pub fn rotate(&mut self, x: f32, y: f32, z: f32) {
+        let to_rotate_by = Quaternion::from(Euler {
+            x: Deg(x),
+            y: Deg(y),
+            z: Deg(z)
+        });
+
+        self.rotation = self.rotation * to_rotate_by;
+        // println!("rotation: {:?}", Euler::from(self.rotation));
     }
 }

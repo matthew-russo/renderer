@@ -1,5 +1,6 @@
 #![feature(custom_attribute)]
 #![feature(duration_as_u128)]
+#![feature(copysign)]
 
 #[macro_use]
 extern crate vulkano_shader_derive;
@@ -11,7 +12,9 @@ extern crate vulkano;
 extern crate winit;
 extern crate image;
 extern crate specs;
+extern crate cgmath;
 extern crate uuid;
+
 
 mod render_layers;
 mod events;
@@ -20,10 +23,12 @@ mod utils;
 mod renderer;
 mod components;
 mod timing;
+mod systems;
 
 use std::sync::{
     Mutex,
     Arc,
+    RwLock
 };
 
 use specs::{
@@ -35,16 +40,19 @@ use specs::{
 
 use rand::Rng;
 
+use cgmath::Vector3;
+
 use crate::events::event_handler::EventHandler;
 use crate::renderer::HelloTriangleApplication;
-use crate::primitives::vertex::Vertex;
 use crate::components::mesh::Mesh;
 use crate::components::transform::Transform;
 use crate::primitives::three_d::cube::Cube;
 use crate::components::camera::Camera;
 use crate::timing::Time;
+use crate::systems::rotation::Rotation;
 
 fn main() {
+    let mut time = Arc::new(RwLock::new(Time::new()));
     let mut app = HelloTriangleApplication::initialize();
 
     let event_handler = Arc::new(Mutex::new(EventHandler::new()));
@@ -55,6 +63,7 @@ fn main() {
     world.register::<Camera>();
 
     let mut dispatcher = DispatcherBuilder::new()
+        .with(Rotation { time: time.clone() }, "rotation", &[])
         .build();
 
     dispatcher.setup(&mut world.res);
@@ -66,12 +75,12 @@ fn main() {
         .build();
 
     let mut rng = rand::thread_rng();
-    for i in 0..255 {
+    for i in 0..512 {
         let (mut transform, mesh) = Cube::new();
-        let x = rng.gen_range(-5.0, 5.0);
-        let y = rng.gen_range(-5.0, 5.0);
-        let z = rng.gen_range(-5.0, 5.0);
-        transform.translate(glm::vec3(x, y, z));
+        let x = rng.gen_range(-15.0, 15.0);
+        let y = rng.gen_range(-15.0, 15.0);
+        let z = rng.gen_range(-15.0, 15.0);
+        transform.translate(Vector3::new(x, y, z));
 
         world
             .create_entity()
@@ -82,7 +91,6 @@ fn main() {
 
     app.create_scene_vertex_buffers((&world.read_storage::<Transform>(), &world.read_storage::<Mesh>()).join().collect());
 
-    let mut time = Time::new();
     loop {
         // pull in events from windowing system
         app.events_loop.poll_events(|ev| {
@@ -98,7 +106,7 @@ fn main() {
         world.maintain();
 
         // update frame timing
-        time.tick();
+        time.write().unwrap().tick();
 
         // actually render the screen
         // let added_meshes = (world.read_storage::<AddedMesh>(), world.read_storage::<Transform>(), world.read_storage::<Mesh>()).join();
@@ -108,10 +116,16 @@ fn main() {
         // renderer.remove_meshes(removed_meshes);
         let camera_storage = world.read_storage::<Camera>();
         let transform_storage = world.read_storage::<Transform>();
+        let mesh_storage = world.read_storage::<Mesh>();
 
         let (camera, transform) = (&camera_storage, &transform_storage).join().nth(0).unwrap();
 
-        app.create_command_buffers(transform);
+        let renderables = (&transform_storage, &mesh_storage)
+            .join()
+            .map(|(transform, mesh)| (mesh.key.clone(), transform.clone()))
+            .collect();
+
+        app.create_command_buffers(transform, renderables);
         app.draw_frame();
     }
 }

@@ -24,6 +24,8 @@ use crate::primitives::two_d::widget::Widget;
 use crate::components::camera::Camera;
 use crate::components::transform::Transform;
 
+use cgmath::Vector3;
+
 // This struct takes all incoming window events and converts them to application events to be passed down to widgets
 pub struct EventHandler {
     window_events: Vec<Event>,
@@ -148,32 +150,32 @@ impl EventHandler {
                     KeyPress::EscKey => {},
                     KeyPress::W => {
                         for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
-                            transform.translate(glm::vec3(0.0, 0.0, 1.0));
+                            transform.translate(Vector3::new(0.0, 0.0, 1.0));
                         }
                     },
                     KeyPress::A => {
                         for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
-                            transform.translate(glm::vec3(-1.0, 0.0, 0.0));
+                            transform.translate(Vector3::new(-1.0, 0.0, 0.0));
                         }
                     },
                     KeyPress::S => {
                         for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
-                            transform.translate(glm::vec3(0.0, 0.0, -1.0));
+                            transform.translate(Vector3::new(0.0, 0.0, -1.0));
                         }
                     },
                     KeyPress::D => {
                         for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
-                            transform.translate(glm::vec3(1.0, 0.0, 0.0));
+                            transform.translate(Vector3::new(1.0, 0.0, 0.0));
                         }
                     },
                     KeyPress::Space => {
                         for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
-                            transform.translate(glm::vec3(0.0, 1.0, 0.0));
+                            transform.translate(Vector3::new(0.0, 1.0, 0.0));
                         }
                     },
                     KeyPress::LShift => {
                         for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
-                            transform.translate(glm::vec3(0.0, -1.0, 0.0));
+                            transform.translate(Vector3::new(0.0, -1.0, 0.0));
                         }
                     },
                 },

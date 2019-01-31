@@ -61,6 +61,7 @@ use crate::render_layers::ui_layer::UiLayer;
 use crate::primitives::three_d::model::Model;
 use crate::components::transform::Transform;
 use crate::components::mesh::Mesh;
+use std::collections::HashMap;
 
 const WIDTH: u32 = 1440;
 const HEIGHT: u32 = 900;
@@ -458,7 +459,7 @@ impl HelloTriangleApplication {
         ).unwrap()
     }
 
-    pub fn create_command_buffers(&mut self, camera_transform: &Transform) {
+    pub fn create_command_buffers(&mut self, camera_transform: &Transform, renderables: HashMap<String, Transform>) {
         let queue_family = self.graphics_queue.family();
 
         self.command_buffers = self.swap_chain_framebuffers.iter()
@@ -478,7 +479,7 @@ impl HelloTriangleApplication {
                 self.scene_layer.lock().unwrap().camera_transform = camera_transform.clone();
 
                 for layer in self.render_layers.iter() {
-                    builder = layer.lock().unwrap().draw_indexed(builder);
+                    builder = layer.lock().unwrap().draw_indexed(builder, &renderables);
                 }
 
                 Arc::new(builder.end_render_pass().unwrap().build().unwrap())
@@ -621,7 +622,7 @@ impl HelloTriangleApplication {
         self.swap_chain_framebuffers = Self::create_framebuffers(&self.swap_chain_images, &self.render_pass, &self.depth_image);
 
         // todo -> don't pass new transform in cause it'll reset camera
-        self.create_command_buffers(&Transform::new());
+        self.create_command_buffers(&Transform::new(), HashMap::new());
 
         Ok(())
     }

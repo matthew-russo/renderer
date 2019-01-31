@@ -1,5 +1,4 @@
 use std::sync::{Arc, Mutex};
-use std::path::Path;
 use std::time::Instant;
 
 use vulkano::buffer::TypedBufferAccess;
@@ -21,14 +20,11 @@ use vulkano::format::Format;
 use vulkano::descriptor::pipeline_layout::PipelineLayoutDesc;
 use vulkano::sync::GpuFuture;
 use vulkano::buffer::BufferAccess;
-use vulkano::buffer::ImmutableBuffer;
-use vulkano::buffer::BufferUsage;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::pool::standard::StandardCommandPoolBuilder;
 use vulkano::descriptor::descriptor_set::FixedSizeDescriptorSet;
 use vulkano::pipeline::vertex::SingleBufferDefinition;
 use vulkano::descriptor::pipeline_layout::PipelineLayout;
-use vulkano::descriptor::descriptor_set::PersistentDescriptorSetBuf;
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSetImg;
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSetSampler;
 
@@ -37,16 +33,27 @@ use image::GenericImageView;
 use crate::primitives;
 use crate::primitives::uniform_buffer_object::UniformBufferObject;
 use crate::render_layers::render_layer::RenderLayer;
-use crate::utils::asset_loading::*;
 use crate::utils::vk_creation;
 use crate::primitives::vertex::Vertex;
 use crate::primitives::three_d::model::Model;
-
-use rand::Rng;
 use crate::components::transform::Transform;
 
+use std::collections::HashMap;
+use cgmath::{
+    Deg,
+    Basis3,
+    Point3,
+    Vector3,
+    Matrix4,
+    SquareMatrix,
+    Transform as cgTransform,
+    Quaternion,
+    perspective,
+};
+
 const MODEL_PATH: &'static str = "C:\\Users\\mcr43\\IdeaProjects\\vulkan_tutorial\\src\\data\\models\\chalet.obj";
-const TEXTURE_PATH: &'static str = "C:\\Users\\mcr43\\IdeaProjects\\vulkan_tutorial\\src\\data\\textures\\chalet.jpg";
+// const TEXTURE_PATH: &'static str = "C:\\Users\\mcr43\\IdeaProjects\\vulkan_tutorial\\src\\data\\textures\\chalet.jpg";
+const TEXTURE_PATH: &'static str = "C:\\Users\\mcr43\\IdeaProjects\\rendering_engine\\src\\data\\textures\\demo.jpg";
 
 mod vs {
     vulkano_shaders::shader! {
@@ -73,7 +80,7 @@ pub struct SceneLayer {
     graphics_pipeline: Arc<SceneGraphicsPipeline>,
 
     descriptor_sets_pool: Arc<Mutex<FixedSizeDescriptorSetsPool<Arc<SceneGraphicsPipeline>>>>,
-    descriptor_set: Arc<FixedSizeDescriptorSet<Arc<SceneGraphicsPipeline>, ((((), PersistentDescriptorSetBuf<Arc<ImmutableBuffer<[UniformBufferObject; 256]>>>), PersistentDescriptorSetImg<Arc<ImmutableImage<Format>>>), PersistentDescriptorSetSampler)>>,
+    descriptor_set: Arc<FixedSizeDescriptorSet<Arc<SceneGraphicsPipeline>, (((), PersistentDescriptorSetImg<Arc<ImmutableImage<Format>>>), PersistentDescriptorSetSampler)>>,
 
     // todo ->
     // uniform_buffers: Vec<UniformBufferObject>,
@@ -128,10 +135,6 @@ impl SceneLayer {
             descriptor_sets_pool.clone(),
             &image_view,
             &image_sampler,
-            start_time,
-            dimensions,
-            &models,
-            &Transform::new(),
         );
 
         let mut scene_layer = SceneLayer {
@@ -183,62 +186,39 @@ impl SceneLayer {
         pool: Arc<Mutex<FixedSizeDescriptorSetsPool<Arc<SceneGraphicsPipeline>>>>,
         image_view: &Arc<ImmutableImage<Format>>,
         image_sampler: &Arc<Sampler>,
-        start_time: Instant,
-        dimensions: [f32; 2],
-        models: &Vec<Model>,
-        camera_transform: &Transform,
-    ) -> Arc<FixedSizeDescriptorSet<Arc<SceneGraphicsPipeline>, ((((), PersistentDescriptorSetBuf<Arc<ImmutableBuffer<[UniformBufferObject; 256]>>>), PersistentDescriptorSetImg<Arc<ImmutableImage<Format>>>), PersistentDescriptorSetSampler)>> {
-        let mut ubos: [UniformBufferObject; 256] = [Self::update_uniform_buffer(start_time, dimensions, &Transform::new(), camera_transform); 256];
-
-        for (i, model) in models.iter().enumerate() {
-           ubos[i] = Self::update_uniform_buffer(start_time, dimensions, &model.transform, camera_transform);
-        }
-
-        let (buffer, future) = ImmutableBuffer::from_data(
-           ubos,
-           BufferUsage::uniform_buffer(),
-           graphics_queue.clone()
-        ).unwrap();
-
-        future.flush().unwrap();
-
+    ) -> Arc<FixedSizeDescriptorSet<Arc<SceneGraphicsPipeline>, (((), PersistentDescriptorSetImg<Arc<ImmutableImage<Format>>>), PersistentDescriptorSetSampler)>> {
         Arc::new(pool.lock().unwrap().next()
-            .add_buffer(buffer).unwrap()
             .add_sampled_image(image_view.clone(), image_sampler.clone()) .unwrap()
             .build()
             .unwrap())
     }
 
     fn update_uniform_buffer(start_time: Instant, dimensions: [f32; 2], model_transform: &Transform, camera_transform: &Transform) -> UniformBufferObject {
-        let duration = Instant::now().duration_since(start_time);
-        let elapsed = duration.as_millis();
+        let translation = Matrix4::from_translation(model_transform.position);
+        // let rotation = Matrix4::from::<Quaternion<f32>>(&model_transform.rotation);
 
-        let identity_matrix = glm::mat4(
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
-        );
+        let scale = Matrix4::from_nonuniform_scale(model_transform.scale.x, model_transform.scale.y, model_transform.scale.z);
+        let model = Matrix4::identity()
+            .concat(&translation)
+            .concat(&model_transform.rotation.into())
+            .concat(&scale);
 
-        let mut model = glm::ext::translate(&identity_matrix, model_transform.position);
-        model = glm::ext::scale(&model, model_transform.scale);
-        model = glm::ext::rotate(&model, (elapsed as f32) * glm::radians(0.180), glm::vec3(0.0, 0.5, 1.0) /*model_transform.rotation*/);
 
         let position = camera_transform.position;
-        let view = glm::ext::look_at(
-            glm::vec3(position.x, position.y, position.z),
-            glm::vec3(0.0, 0.0, 0.0),
-            glm::vec3(0.0, 1.0, 0.0)
+        let view = Matrix4::look_at(
+            Point3::new(position.x, position.y, position.z),
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0)
         );
 
-        let mut proj = glm::ext::perspective(
-            glm::radians(45.0,),
+        let mut proj = perspective(
+            Deg(45.0),
             dimensions[0] as f32 / dimensions[1] as f32,
             0.1,
             1000.0
         );
 
-        proj.c1.y *= -1.0;
+        proj.y.y *= -1.0;
 
         UniformBufferObject::new(model, view, proj)
     }
@@ -274,8 +254,6 @@ impl SceneLayer {
         dimensions: [f32; 2],
         shader: &'static str
     ) -> Arc<SceneGraphicsPipeline> {
-
-
         let vertex = vs::Shader::load(device.clone()).expect("failed to create vertex shader modules");
         let frag = fs::Shader::load(device.clone()).expect("failed to create frag shader modules");
 
@@ -334,29 +312,30 @@ impl SceneLayer {
     }
 }
 
-#[repr(C)]
-struct PushConstant {
-    value: u32,
-}
-
 impl RenderLayer for SceneLayer {
-    fn draw_indexed(&mut self, mut builder: AutoCommandBufferBuilder<StandardCommandPoolBuilder>) -> AutoCommandBufferBuilder<StandardCommandPoolBuilder> {
+    fn draw_indexed(&mut self, mut builder: AutoCommandBufferBuilder<StandardCommandPoolBuilder>, renderables: &HashMap<String, Transform>) -> AutoCommandBufferBuilder<StandardCommandPoolBuilder> {
+        for model in self.models.iter_mut() {
+            match renderables.get(&model.key) {
+                Some(transform) => model.transform = transform.clone(),
+                None => (),
+            }
+        }
+
         self.descriptor_set = Self::build_descriptor_set(
             &self.graphics_queue,
             self.descriptor_sets_pool.clone(),
             &self.image_view,
             &self.image_sampler,
-            self.start_time,
-            self.dimensions.clone(),
-            &self.models,
-            &self.camera_transform,
         );
 
-        let models = self.models.clone();
+        for (i, model) in self.models.iter().enumerate() {
+            let ubo = Self::update_uniform_buffer(self.start_time, self.dimensions, &model.transform, &self.camera_transform);
+            let (model, view, proj) = ubo.as_arrays();
 
-        for (i, model) in models.iter().enumerate() {
-            let push_constant = vs::ty::PushConstant {
-                value: i as u32,
+            let push_constant = vs::ty::UniformBufferObject {
+                model,
+                view,
+                proj
             };
 
             builder = builder.draw_indexed(

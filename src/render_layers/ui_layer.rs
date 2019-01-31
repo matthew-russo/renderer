@@ -33,6 +33,8 @@ use crate::primitives::two_d::{
     widget::Widget,
     quad::Quad,
 };
+use std::collections::HashMap;
+use crate::components::transform::Transform;
 
 mod ui_vertex_shader {
     vulkano_shaders::shader! {
@@ -221,7 +223,7 @@ impl UiLayer {
 }
 
 impl RenderLayer for UiLayer {
-    fn draw_indexed(&mut self, builder: AutoCommandBufferBuilder<StandardCommandPoolBuilder>) -> AutoCommandBufferBuilder<StandardCommandPoolBuilder> {
+    fn draw_indexed(&mut self, builder: AutoCommandBufferBuilder<StandardCommandPoolBuilder>, renderables: &HashMap<String, Transform>) -> AutoCommandBufferBuilder<StandardCommandPoolBuilder> {
         let widgets = self.widgets.clone();
         for widget in widgets.iter() {
 

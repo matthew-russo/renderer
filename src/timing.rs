@@ -16,8 +16,13 @@ impl Time {
    }
 
    pub fn delta_time(&self) -> u128 {
+      let duration = Instant::now().duration_since(self.last_frame);
+      duration.as_millis()
+   }
+
+   pub fn total_time(&self) -> u128 {
       let duration = Instant::now().duration_since(self.start_time);
-      duration.as_micros()
+      duration.as_millis()
    }
 
    pub fn tick(&mut self) {

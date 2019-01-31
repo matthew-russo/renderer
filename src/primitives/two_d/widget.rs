@@ -1,4 +1,3 @@
-use crate::primitives::vertex::Vertex;
 use crate::events::application_events::{ApplicationEvent, KeyPress};
 use crate::primitives::two_d::quad::Quad;
 
