@@ -1,5 +1,3 @@
-use vulkano::impl_vertex;
-
 #[derive(Copy, Clone, Debug)]
 pub struct Vertex {
     in_position: [f32; 3],
@@ -20,5 +18,3 @@ impl Vertex {
         self.in_position[1]
     }
 }
-
-impl_vertex!(Vertex, in_position, in_color, in_tex_coord);

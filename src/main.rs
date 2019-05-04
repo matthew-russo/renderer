@@ -2,13 +2,28 @@
 #![feature(duration_as_u128)]
 #![feature(copysign)]
 
-#[macro_use]
-extern crate vulkano_shader_derive;
-#[macro_use]
-extern crate vulkano_shaders;
-extern crate vulkano_win;
-#[macro_use]
-extern crate vulkano;
+#![cfg_attr(
+    not(any(
+        feature = "vulkan",
+        feature = "dx12",
+        feature = "metal",
+        feature = "gl"
+    )),
+    allow(dead_code, unused_extern_crates, unused_imports)
+)]
+
+#[cfg(feature = "dx12")]
+extern crate gfx_backend_dx12 as back;
+#[cfg(feature = "gl")]
+extern crate gfx_backend_gl as back;
+#[cfg(feature = "metal")]
+extern crate gfx_backend_metal as back;
+#[cfg(feature = "vulkan")]
+extern crate gfx_backend_vulkan as back;
+extern crate gfx_hal as hal;
+
+extern crate glsl_to_spirv;
+
 extern crate winit;
 extern crate image;
 extern crate specs;
@@ -16,7 +31,6 @@ extern crate cgmath;
 extern crate uuid;
 
 
-mod render_layers;
 mod events;
 mod primitives;
 mod utils;
@@ -43,7 +57,7 @@ use rand::Rng;
 use cgmath::Vector3;
 
 use crate::events::event_handler::EventHandler;
-use crate::renderer::HelloTriangleApplication;
+use crate::renderer::Renderer;
 use crate::components::mesh::Mesh;
 use crate::components::transform::Transform;
 use crate::primitives::three_d::cube::Cube;
@@ -53,7 +67,7 @@ use crate::systems::rotation::Rotation;
 
 fn main() {
     let mut time = Arc::new(RwLock::new(Time::new()));
-    let mut app = HelloTriangleApplication::initialize();
+    let mut renderer = Renderer::initialize();
 
     let event_handler = Arc::new(Mutex::new(EventHandler::new()));
 
@@ -89,17 +103,14 @@ fn main() {
             .build();
     }
 
-    app.create_scene_vertex_buffers((&world.read_storage::<Transform>(), &world.read_storage::<Mesh>()).join().collect());
-
     loop {
         // pull in events from windowing system
-        app.events_loop.poll_events(|ev| {
-            event_handler.lock().unwrap().queue_window_event(ev);
-        });
+        // renderer.events_loop.poll_events(|ev| {
+        //     event_handler.lock().unwrap().queue_window_event(ev);
+        // });
 
-        event_handler.lock().unwrap().process_window_events();
-        event_handler.lock().unwrap().handle_events(&world);
-        //app.ui_layer.lock().unwrap().push_events_to_widgets(event_handler.application_events.drain(0..).collect());
+        // event_handler.lock().unwrap().process_window_events();
+        // event_handler.lock().unwrap().handle_events(&world);
 
         // update the systems
         dispatcher.dispatch(&world.res);
@@ -108,12 +119,6 @@ fn main() {
         // update frame timing
         time.write().unwrap().tick();
 
-        // actually render the screen
-        // let added_meshes = (world.read_storage::<AddedMesh>(), world.read_storage::<Transform>(), world.read_storage::<Mesh>()).join();
-        // let removed_meshes = (world.read_storage::<RemovedMesh>(), world.read_resource::<Transform>(), world.read_storage::<Mesh>()).join();
-
-        // app.scene_layer.lock().unwrap().add_meshes(added_meshes);
-        // renderer.remove_meshes(removed_meshes);
         let camera_storage = world.read_storage::<Camera>();
         let transform_storage = world.read_storage::<Transform>();
         let mesh_storage = world.read_storage::<Mesh>();
@@ -125,7 +130,7 @@ fn main() {
             .map(|(transform, mesh)| (mesh.key.clone(), transform.clone()))
             .collect();
 
-        app.create_command_buffers(transform, renderables);
-        app.draw_frame();
+        // renderer.create_command_buffers(transform, renderables);
+        renderer.draw_frame(&mut event_handler);
     }
 }
