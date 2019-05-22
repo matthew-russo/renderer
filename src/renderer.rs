@@ -631,190 +631,190 @@ impl<B: hal::Backend> FramebufferState<B> {
     }
 }
     
-// struct ImageState<B: hal::Backend> {
-//     desc_set: DescSet<B>,
-//     sampler: Option<B::Sampler>,
-//     image: Option<B::Image>,
-//     image_view: Option<B::ImageView>,
-//     image_memory: Option<B::Memory>,
-//     transferred_image_fence: Option<B::Fence>,
-//     device_state: Arc<RwLock<DeviceState<B>>>
-// }
-// 
-// impl<B: hal::Backend> ImageState<B> {
-//     unsafe fn new(
-//         desc_set: DescSet<B>,
-//         device_state: &Arc<RwLock<DeviceState<B>>>,
-//         adapter_state: &AdapterState<B>,
-//         usage: hal::buffer::Usage,
-//         command_pool: &mut CommandPool<B, Graphics>
-//     ) -> Self {
-//         let img_data = include_bytes!("data/textures/demo.jpg");
-//         let img = load_image(Cursor::new(&img_data[..]), image::JPEG)
-//             .unwrap()
-//             .to_rgba();
-// 
-//         let (width, height) = img.dimensions();
-//         let kind = hal::image::Kind::D2(width as hal::image::Size, height as hal::image::Size, 1, 1);
-//         let row_alignment_mask = adapter_state.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
-//         let image_stride = 4_usize;
-//         let row_pitch = (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
-//         let upload_size = (height * row_pitch) as u64;
-// 
-//         let mut image_upload_buffer = device_state.read().unwrap().device.create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC).unwrap();
-//         let image_mem_reqs = device_state.read().unwrap().device.get_buffer_requirements(&image_upload_buffer);
-// 
-//         let upload_type = adapter_state
-//             .memory_types
-//             .iter()
-//             .enumerate()
-//             .position(|(id, mem_type)| {
-//                 image_mem_reqs.type_mask & (1 << id) != 0
-//                 && mem_type.properties.contains(hal::memory::Properties::CPU_VISIBLE)
-//             })
-//             .unwrap()
-//             .into();
-// 
-//         let image_upload_memory = device_state.read().unwrap().device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
-// 
-//         device_state.read().unwrap().device.bind_buffer_memory(&image_upload_memory, 0, &mut image_upload_buffer).unwrap();
-// 
-//         let mut data = device_state.read().unwrap().device
-//             .acquire_mapping_writer::<u8>(&image_upload_memory, 0..image_mem_reqs.size)
-//             .unwrap();
-// 
-//         for y in 0..height as usize {
-//             let row = &(*img)[y * (width as usize) * image_stride..(y+1) * (width as usize) * image_stride];
-//             let dest_base = y * row_pitch as usize;
-//             data[dest_base..dest_base + row.len()].copy_from_slice(row);
-//         }
-// 
-//         device_state.read().unwrap().device.release_mapping_writer(data).unwrap();
-// 
-//         let mut image = device_state.read().unwrap().device
-//             .create_image(
-//                 kind,
-//                 1,
-//                 Rgba8Srgb::SELF,
-//                 hal::image::Tiling::Optimal,
-//                 hal::image::Usage::TRANSFER_DST | hal::image::Usage::SAMPLED,
-//                 hal::image::ViewCapabilities::empty(),
-//             )
-//             .unwrap();
-// 
-//         let image_req = device_state.read().unwrap().device.get_image_requirements(&image);
-// 
-//         let device_type = adapter_state
-//             .memory_types
-//             .iter()
-//             .enumerate()
-//             .position(|(id, memory_type)| {
-//                 image_req.type_mask & (1 << id) != 0
-//                 && memory_type.properties.contains(hal::memory::Properties::DEVICE_LOCAL)
-//             })
-//             .unwrap()
-//             .into();
-// 
-//         let image_memory = device_state.read().unwrap().device.allocate_memory(device_type, image_req.size).unwrap();
-//         device_state.read().unwrap().device.bind_image_memory(&image_memory, 0, &mut image).unwrap();
-// 
-//         let mut transferred_image_fence = device_state.read().unwrap().device.create_fence(false).expect("Can't create fence");
-// 
-//         let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::OneShot>();
-//         cmd_buffer.begin();
-// 
-//         let image_barrier = hal::memory::Barrier::Image {
-//             states: (hal::image::Access::empty(), hal::image::Layout::Undefined)..(hal::image::Access::TRANSFER_WRITE, hal::image::Layout::TransferDstOptimal),
-//             target: &image,
-//             families: None,
-//             range: COLOR_RANGE.clone(),
-//         };
-// 
-//         cmd_buffer.pipeline_barrier(
-//             PipelineStage::TOP_OF_PIPE..PipelineStage::TRANSFER,
-//             hal::memory::Dependencies::empty(),
-//             &[image_barrier],
-//         );
-// 
-//         cmd_buffer.copy_buffer_to_image(
-//             &image_upload_buffer,
-//             &image,
-//             hal::image::Layout::TransferDstOptimal,
-//             &[hal::command::BufferImageCopy {
-//                 buffer_offset: 0,
-//                 buffer_width: row_pitch / (image_stride as u32),
-//                 buffer_height: height as u32,
-//                 image_layers: hal::image::SubresourceLayers {
-//                     aspects: Aspects::COLOR,
-//                     level: 0,
-//                     layers: 0..1,
-//                 },
-//                 image_offset: hal::image::Offset { x: 0, y: 0, z: 0 },
-//                 image_extent: hal::image::Extent {
-//                     width,
-//                     height,
-//                     depth: 1,
-//                 },
-//             }],
-//         );
-// 
-//         let image_barrier = hal::memory::Barrier::Image {
-//             states: (hal::image::Access::TRANSFER_WRITE, hal::image::Layout::TransferDstOptimal)..(hal::image::Access::SHADER_READ, hal::image::Layout::ShaderReadOnlyOptimal),
-//             target: &image,
-//             families: None,
-//             range: COLOR_RANGE.clone(),
-//         };
-// 
-//         cmd_buffer.pipeline_barrier(
-//             PipelineStage::TRANSFER..PipelineStage::FRAGMENT_SHADER,
-//             hal::memory::Dependencies::empty(),
-//             &[image_barrier],
-//         );
-// 
-//         cmd_buffer.finish();
-// 
-//         device_state.write().unwrap().queue_group.queues[0].submit_nosemaphores(Some(&cmd_buffer), Some(&mut transferred_image_fence));
-// 
-//         device_state.read().unwrap().device.destroy_buffer(image_upload_buffer);
-//         device_state.read().unwrap().device.free_memory(image_upload_memory);
-// 
-//         let image_view = device_state.read().unwrap().device
-//             .create_image_view(
-//                 &image,
-//                 hal::image::ViewKind::D2,
-//                 Rgba8Srgb::SELF,
-//                 Swizzle::NO,
-//                 COLOR_RANGE.clone(),
-//             ).unwrap();
-// 
-//         let sampler = device_state.read().unwrap().device
-//             .create_sampler(hal::image::SamplerInfo::new(hal::image::Filter::Linear, hal::image::WrapMode::Clamp))
-//             .expect("Can't create sampler");
-// 
-//         Self {
-//             desc_set,
-//             sampler: Some(sampler),
-//             image: Some(image),
-//             image_view: Some(image_view),
-//             image_memory: Some(image_memory),
-//             transferred_image_fence: Some(transferred_image_fence),
-//             device_state: device_state.clone()
-//         }
-//     }
-// 
-//     pub fn wait_for_transfer_completion(&self) {
-//         let device = &self.desc_set.desc_set_layout.device_state.read().unwrap().device;
-//         unsafe {
-//             device
-//                 .wait_for_fence(&self.transferred_image_fence.as_ref().unwrap(), !0)
-//                 .unwrap();
-//         }
-//     }
-// 
-//     pub fn get_layout(&self) -> &B::DescriptorSetLayout {
-//         self.desc_set.desc_set_layout.layout.as_ref().unwrap()
-//     }
-// }
+struct ImageState<B: hal::Backend> {
+    desc_set: DescSet<B>,
+    sampler: Option<B::Sampler>,
+    image: Option<B::Image>,
+    image_view: Option<B::ImageView>,
+    image_memory: Option<B::Memory>,
+    transferred_image_fence: Option<B::Fence>,
+    device_state: Arc<RwLock<DeviceState<B>>>
+}
+
+impl<B: hal::Backend> ImageState<B> {
+    unsafe fn new(
+        desc_set: DescSet<B>,
+        device_state: &Arc<RwLock<DeviceState<B>>>,
+        adapter_state: &AdapterState<B>,
+        usage: hal::buffer::Usage,
+        command_pool: &mut CommandPool<B, Graphics>
+    ) -> Self {
+        let img_data = include_bytes!("data/textures/demo.jpg");
+        let img = load_image(Cursor::new(&img_data[..]), image::JPEG)
+            .unwrap()
+            .to_rgba();
+
+        let (width, height) = img.dimensions();
+        let kind = hal::image::Kind::D2(width as hal::image::Size, height as hal::image::Size, 1, 1);
+        let row_alignment_mask = adapter_state.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
+        let image_stride = 4_usize;
+        let row_pitch = (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
+        let upload_size = (height * row_pitch) as u64;
+
+        let mut image_upload_buffer = device_state.read().unwrap().device.create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC).unwrap();
+        let image_mem_reqs = device_state.read().unwrap().device.get_buffer_requirements(&image_upload_buffer);
+
+        let upload_type = adapter_state
+            .memory_types
+            .iter()
+            .enumerate()
+            .position(|(id, mem_type)| {
+                image_mem_reqs.type_mask & (1 << id) != 0
+                && mem_type.properties.contains(hal::memory::Properties::CPU_VISIBLE)
+            })
+            .unwrap()
+            .into();
+
+        let image_upload_memory = device_state.read().unwrap().device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
+
+        device_state.read().unwrap().device.bind_buffer_memory(&image_upload_memory, 0, &mut image_upload_buffer).unwrap();
+
+        let mut data = device_state.read().unwrap().device
+            .acquire_mapping_writer::<u8>(&image_upload_memory, 0..image_mem_reqs.size)
+            .unwrap();
+
+        for y in 0..height as usize {
+            let row = &(*img)[y * (width as usize) * image_stride..(y+1) * (width as usize) * image_stride];
+            let dest_base = y * row_pitch as usize;
+            data[dest_base..dest_base + row.len()].copy_from_slice(row);
+        }
+
+        device_state.read().unwrap().device.release_mapping_writer(data).unwrap();
+
+        let mut image = device_state.read().unwrap().device
+            .create_image(
+                kind,
+                1,
+                Rgba8Srgb::SELF,
+                hal::image::Tiling::Optimal,
+                hal::image::Usage::TRANSFER_DST | hal::image::Usage::SAMPLED,
+                hal::image::ViewCapabilities::empty(),
+            )
+            .unwrap();
+
+        let image_req = device_state.read().unwrap().device.get_image_requirements(&image);
+
+        let device_type = adapter_state
+            .memory_types
+            .iter()
+            .enumerate()
+            .position(|(id, memory_type)| {
+                image_req.type_mask & (1 << id) != 0
+                && memory_type.properties.contains(hal::memory::Properties::DEVICE_LOCAL)
+            })
+            .unwrap()
+            .into();
+
+        let image_memory = device_state.read().unwrap().device.allocate_memory(device_type, image_req.size).unwrap();
+        device_state.read().unwrap().device.bind_image_memory(&image_memory, 0, &mut image).unwrap();
+
+        let mut transferred_image_fence = device_state.read().unwrap().device.create_fence(false).expect("Can't create fence");
+
+        let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::OneShot>();
+        cmd_buffer.begin();
+
+        let image_barrier = hal::memory::Barrier::Image {
+            states: (hal::image::Access::empty(), hal::image::Layout::Undefined)..(hal::image::Access::TRANSFER_WRITE, hal::image::Layout::TransferDstOptimal),
+            target: &image,
+            families: None,
+            range: COLOR_RANGE.clone(),
+        };
+
+        cmd_buffer.pipeline_barrier(
+            PipelineStage::TOP_OF_PIPE..PipelineStage::TRANSFER,
+            hal::memory::Dependencies::empty(),
+            &[image_barrier],
+        );
+
+        cmd_buffer.copy_buffer_to_image(
+            &image_upload_buffer,
+            &image,
+            hal::image::Layout::TransferDstOptimal,
+            &[hal::command::BufferImageCopy {
+                buffer_offset: 0,
+                buffer_width: row_pitch / (image_stride as u32),
+                buffer_height: height as u32,
+                image_layers: hal::image::SubresourceLayers {
+                    aspects: Aspects::COLOR,
+                    level: 0,
+                    layers: 0..1,
+                },
+                image_offset: hal::image::Offset { x: 0, y: 0, z: 0 },
+                image_extent: hal::image::Extent {
+                    width,
+                    height,
+                    depth: 1,
+                },
+            }],
+        );
+
+        let image_barrier = hal::memory::Barrier::Image {
+            states: (hal::image::Access::TRANSFER_WRITE, hal::image::Layout::TransferDstOptimal)..(hal::image::Access::SHADER_READ, hal::image::Layout::ShaderReadOnlyOptimal),
+            target: &image,
+            families: None,
+            range: COLOR_RANGE.clone(),
+        };
+
+        cmd_buffer.pipeline_barrier(
+            PipelineStage::TRANSFER..PipelineStage::FRAGMENT_SHADER,
+            hal::memory::Dependencies::empty(),
+            &[image_barrier],
+        );
+
+        cmd_buffer.finish();
+
+        device_state.write().unwrap().queue_group.queues[0].submit_nosemaphores(Some(&cmd_buffer), Some(&mut transferred_image_fence));
+
+        device_state.read().unwrap().device.destroy_buffer(image_upload_buffer);
+        device_state.read().unwrap().device.free_memory(image_upload_memory);
+
+        let image_view = device_state.read().unwrap().device
+            .create_image_view(
+                &image,
+                hal::image::ViewKind::D2,
+                Rgba8Srgb::SELF,
+                Swizzle::NO,
+                COLOR_RANGE.clone(),
+            ).unwrap();
+
+        let sampler = device_state.read().unwrap().device
+            .create_sampler(hal::image::SamplerInfo::new(hal::image::Filter::Linear, hal::image::WrapMode::Clamp))
+            .expect("Can't create sampler");
+
+        Self {
+            desc_set,
+            sampler: Some(sampler),
+            image: Some(image),
+            image_view: Some(image_view),
+            image_memory: Some(image_memory),
+            transferred_image_fence: Some(transferred_image_fence),
+            device_state: device_state.clone()
+        }
+    }
+
+    pub fn wait_for_transfer_completion(&self) {
+        let device = &self.desc_set.desc_set_layout.device_state.read().unwrap().device;
+        unsafe {
+            device
+                .wait_for_fence(&self.transferred_image_fence.as_ref().unwrap(), !0)
+                .unwrap();
+        }
+    }
+
+    pub fn get_layout(&self) -> &B::DescriptorSetLayout {
+        self.desc_set.desc_set_layout.layout.as_ref().unwrap()
+    }
+}
 
 struct DescSet<B: hal::Backend> {
     descriptor_set: B::DescriptorSet,
@@ -907,7 +907,7 @@ pub struct Renderer<B: hal::Backend> {
     pipeline_state: PipelineState<B>,
     framebuffer_state: FramebufferState<B>,
     
-    // image_state: ImageState<B>,
+    image_state: ImageState<B>,
     vertex_buffer_state: BufferState<B>,
 
     recreate_swapchain: bool,
@@ -981,13 +981,13 @@ impl<B: hal::Backend> Renderer<B> {
             )
             .expect("Can't create staging command pool");
 
-        // let image_state = ImageState::new(
-        //     image_desc_set,
-        //     &device_state,
-        //     &backend_state.adapter_state,
-        //     hal::buffer::Usage::TRANSFER_SRC,
-        //     &mut staging_pool
-        // );
+        let image_state = ImageState::new(
+            image_desc_set,
+            &device_state,
+            &backend_state.adapter_state,
+            hal::buffer::Usage::TRANSFER_SRC,
+            &mut staging_pool
+        );
 
         device_state
             .read()
@@ -1008,7 +1008,7 @@ impl<B: hal::Backend> Renderer<B> {
         let pipeline_state = PipelineState::new(
             &device_state,
             render_pass_state.render_pass.as_ref().unwrap(),
-            vec![/*image_state.get_layout()*/]
+            vec![image_state.get_layout()]
         );
         let viewport = Self::create_viewport(&swapchain_state);
 
@@ -1029,7 +1029,7 @@ impl<B: hal::Backend> Renderer<B> {
             pipeline_state,
             framebuffer_state,
 
-            // image_state,
+            image_state,
             vertex_buffer_state,
 
             recreate_swapchain: false,
@@ -1167,14 +1167,14 @@ impl<B: hal::Backend> Renderer<B> {
         cmd_buffer.set_scissors(0, &[self.viewport.rect]);
         cmd_buffer.bind_graphics_pipeline(&self.pipeline_state.pipeline.as_ref().unwrap());
         cmd_buffer.bind_vertex_buffers(0, Some((self.vertex_buffer_state.get_buffer(), 0)));
-        // cmd_buffer.bind_graphics_descriptor_sets(
-        //     &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
-        //     0,
-        //     vec![
-        //         &self.image_state.desc_set.descriptor_set,
-        //     ],
-        //     &[],
-        // ); //TODO
+        cmd_buffer.bind_graphics_descriptor_sets(
+            &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
+            0,
+            vec![
+                &self.image_state.desc_set.descriptor_set,
+            ],
+            &[],
+        ); //TODO
 
         {
             let mut encoder = cmd_buffer.begin_render_pass_inline(
@@ -1234,7 +1234,7 @@ impl<B: hal::Backend> Renderer<B> {
         self.pipeline_state = PipelineState::new(
             &self.device_state,
             self.render_pass_state.render_pass.as_ref().unwrap(),
-            vec![/*self.image_state.get_layout()*/],
+            vec![self.image_state.get_layout()],
         );
 
         self.viewport = Self::create_viewport(&self.swapchain_state);
@@ -1286,22 +1286,22 @@ impl<B: hal::Backend> Drop for DescSetLayout<B> {
 }
 
 
-// impl<B: hal::Backend> Drop for ImageState<B> {
-//     fn drop(&mut self) {
-//         unsafe {
-//             let device = &self.desc_set.desc_set_layout.device_state.read().unwrap().device;
-// 
-//             let fence = self.transferred_image_fence.take().unwrap();
-//             device.wait_for_fence(&fence, !0).unwrap();
-//             device.destroy_fence(fence);
-// 
-//             device.destroy_sampler(self.sampler.take().unwrap());
-//             device.destroy_image_view(self.image_view.take().unwrap());
-//             device.destroy_image(self.image.take().unwrap());
-//             device.free_memory(self.image_memory.take().unwrap());
-//         }
-//     }
-// }
+impl<B: hal::Backend> Drop for ImageState<B> {
+    fn drop(&mut self) {
+        unsafe {
+            let device = &self.desc_set.desc_set_layout.device_state.read().unwrap().device;
+
+            let fence = self.transferred_image_fence.take().unwrap();
+            device.wait_for_fence(&fence, !0).unwrap();
+            device.destroy_fence(fence);
+
+            device.destroy_sampler(self.sampler.take().unwrap());
+            device.destroy_image_view(self.image_view.take().unwrap());
+            device.destroy_image(self.image.take().unwrap());
+            device.free_memory(self.image_memory.take().unwrap());
+        }
+    }
+}
 
 impl<B: hal::Backend> Drop for PipelineState<B> {
     fn drop(&mut self) {
