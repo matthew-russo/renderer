@@ -1,17 +1,27 @@
-#![feature(custom_attribute)]
-#![feature(duration_as_u128)]
-#![feature(copysign)]
-
+// #![feature(custom_attribute)]
 #![cfg_attr(
-    not(any(
-        feature = "vulkan",
-        feature = "dx12",
-        feature = "metal",
-        feature = "gl"
-    )),
+    not(
+        any(
+            feature = "vulkan",
+            feature = "dx12",
+            feature = "metal",
+            feature = "gl"
+        )
+    ),
     allow(dead_code, unused_extern_crates, unused_imports)
 )]
 
+#[cfg(
+    not(
+        any(
+            feature = "vulkan",
+            feature = "dx12",
+            feature = "metal",
+            feature = "gl"
+        )
+    )
+)]
+extern crate gfx_backend_empty as back;
 #[cfg(feature = "dx12")]
 extern crate gfx_backend_dx12 as back;
 #[cfg(feature = "gl")]
@@ -30,6 +40,9 @@ extern crate specs;
 extern crate cgmath;
 extern crate uuid;
 
+#[macro_use]
+extern crate env_logger;
+
 
 mod events;
 mod primitives;
@@ -40,7 +53,6 @@ mod timing;
 mod systems;
 
 use std::sync::{
-    Mutex,
     Arc,
     RwLock
 };
@@ -57,7 +69,7 @@ use rand::Rng;
 use cgmath::Vector3;
 
 use crate::events::event_handler::EventHandler;
-use crate::renderer::Renderer;
+use crate::renderer::{WindowState, Renderer, create_backend};
 use crate::components::mesh::Mesh;
 use crate::components::transform::Transform;
 use crate::primitives::three_d::cube::Cube;
@@ -66,10 +78,15 @@ use crate::timing::Time;
 use crate::systems::rotation::Rotation;
 
 fn main() {
-    let mut time = Arc::new(RwLock::new(Time::new()));
-    let mut renderer = Renderer::initialize();
+    env_logger::init();
 
-    let event_handler = Arc::new(Mutex::new(EventHandler::new()));
+    let mut time = Arc::new(RwLock::new(Time::new()));
+
+    let mut window_state = WindowState::new();
+    let (mut backend_state, _instance) = create_backend(&mut window_state);
+    let mut renderer = unsafe { Renderer::new(backend_state, window_state) };
+
+    let mut event_handler = Arc::new(RwLock::new(EventHandler::new()));
 
     let mut world = World::new();
     world.register::<Transform>();
@@ -89,7 +106,7 @@ fn main() {
         .build();
 
     let mut rng = rand::thread_rng();
-    for i in 0..512 {
+    for _i in 0..512 {
         let (mut transform, mesh) = Cube::new();
         let x = rng.gen_range(-15.0, 15.0);
         let y = rng.gen_range(-15.0, 15.0);
@@ -103,6 +120,7 @@ fn main() {
             .build();
     }
 
+    
     loop {
         // pull in events from windowing system
         // renderer.events_loop.poll_events(|ev| {
@@ -125,12 +143,12 @@ fn main() {
 
         let (camera, transform) = (&camera_storage, &transform_storage).join().nth(0).unwrap();
 
-        let renderables = (&transform_storage, &mesh_storage)
-            .join()
-            .map(|(transform, mesh)| (mesh.key.clone(), transform.clone()))
-            .collect();
+        // let renderables = (&transform_storage, &mesh_storage)
+        //     .join()
+        //     .map(|(transform, mesh)| (mesh.key.clone(), transform.clone()))
+        //     .collect();
 
         // renderer.create_command_buffers(transform, renderables);
-        renderer.draw_frame(&mut event_handler);
+        unsafe { renderer.draw_frame(&mut event_handler) };
     }
 }

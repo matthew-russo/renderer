@@ -1,8 +1,8 @@
 #[derive(Copy, Clone, Debug)]
 pub struct Vertex {
-    in_position: [f32; 3],
-    in_color: [f32; 3],
-    in_tex_coord: [f32; 2],
+    pub in_position: [f32; 3],
+    pub in_color: [f32; 3],
+    pub in_tex_coord: [f32; 2],
 }
 
 impl Vertex {
