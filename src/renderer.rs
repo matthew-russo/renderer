@@ -1,6 +1,7 @@
 use std::fs;
 use std::sync::{Arc, RwLock};
 use std::io::{Cursor, Read};
+use std::path::Path;
 
 use hal::format::{Format, AsFormat, ChannelType, Rgba8Srgb, Swizzle, Aspects};
 use hal::pass::Subpass;
@@ -27,6 +28,7 @@ use image::load as load_image;
 
 use crate::primitives::vertex::Vertex;
 use crate::events::event_handler::EventHandler;
+use crate::utils::asset_loading;
 
 const DIMS: Extent2D = Extent2D { width: 1024,height: 768 };
 
@@ -649,7 +651,7 @@ impl<B: hal::Backend> ImageState<B> {
         usage: hal::buffer::Usage,
         command_pool: &mut CommandPool<B, Graphics>
     ) -> Self {
-        let img_data = include_bytes!("data/textures/demo.jpg");
+        let img_data = include_bytes!("data/textures/chalet.jpg");
         let img = load_image(Cursor::new(&img_data[..]), image::JPEG)
             .unwrap()
             .to_rgba();
@@ -924,6 +926,7 @@ pub struct Renderer<B: hal::Backend> {
     
     image_state: ImageState<B>,
     vertex_buffer_state: BufferState<B>,
+    index_buffer_state: BufferState<B>,
 
     recreate_swapchain: bool,
     resize_dims: Extent2D,
@@ -1010,13 +1013,24 @@ impl<B: hal::Backend> Renderer<B> {
             .device
             .destroy_command_pool(staging_pool.into_raw());
 
+        let home = std::env::var("HOME").unwrap();
+        let model_path = format!("{}/Downloads/chalet.obj", home);
+        let model = asset_loading::load_model(Path::new(&model_path)); 
+
         let vertex_buffer_state = BufferState::new(
             &device_state,
-            &QUAD,
+            &model.vertices,
             hal::buffer::Usage::VERTEX,
             &backend_state.adapter_state.memory_types,
         );
        
+        let index_buffer_state = BufferState::new(
+            &device_state,
+            &model.indices,
+            hal::buffer::Usage::INDEX,
+            &backend_state.adapter_state.memory_types,
+        );
+
         let mut swapchain_state = SwapchainState::new(&mut backend_state, &device_state);
         let render_pass_state = RenderPassState::new(&device_state, &swapchain_state);
         let framebuffer_state = FramebufferState::new(&device_state, &mut swapchain_state, &render_pass_state);
@@ -1046,6 +1060,7 @@ impl<B: hal::Backend> Renderer<B> {
 
             image_state,
             vertex_buffer_state,
+            index_buffer_state,
 
             recreate_swapchain: false,
             resize_dims,
@@ -1182,6 +1197,11 @@ impl<B: hal::Backend> Renderer<B> {
         cmd_buffer.set_scissors(0, &[self.viewport.rect]);
         cmd_buffer.bind_graphics_pipeline(&self.pipeline_state.pipeline.as_ref().unwrap());
         cmd_buffer.bind_vertex_buffers(0, Some((self.vertex_buffer_state.get_buffer(), 0)));
+        cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView {
+            buffer: self.index_buffer_state.get_buffer(),
+            offset: 0,
+            index_type: hal::IndexType::U32
+        });
         cmd_buffer.bind_graphics_descriptor_sets(
             &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
             0,
@@ -1200,7 +1220,7 @@ impl<B: hal::Backend> Renderer<B> {
                     0.6, 0.2, 0.0, 1.0,
                 ]))],
             );
-            encoder.draw(0..(QUAD.len() as u32), 0..1);
+            encoder.draw_indexed(0..(self.index_buffer_state.size as u32), 0, 0..1);
         }
         cmd_buffer.finish();
 
