@@ -791,6 +791,21 @@ impl<B: hal::Backend> ImageState<B> {
             .create_sampler(hal::image::SamplerInfo::new(hal::image::Filter::Linear, hal::image::WrapMode::Clamp))
             .expect("Can't create sampler");
 
+        desc_set.write(
+            &mut device_state.write().unwrap().device,
+            vec![
+                DescSetWrite {
+                    binding: 0,
+                    array_offset: 0,
+                    descriptors: hal::pso::Descriptor::CombinedImageSampler(
+                        &image_view,
+                        hal::image::Layout::Undefined,
+                        &sampler
+                    )
+                }
+            ]
+        );
+
         Self {
             desc_set,
             sampler: Some(sampler),
@@ -951,18 +966,18 @@ impl<B: hal::Backend> Renderer<B> {
             vec![
                 hal::pso::DescriptorSetLayoutBinding {
                     binding: 0,
-                    ty: hal::pso::DescriptorType::SampledImage,
+                    ty: hal::pso::DescriptorType::CombinedImageSampler,
                     count: 1,
                     stage_flags: ShaderStageFlags::FRAGMENT,
                     immutable_samplers: false
                 },
-                hal::pso::DescriptorSetLayoutBinding {
-                    binding: 1,
-                    ty: hal::pso::DescriptorType::Sampler,
-                    count: 1,
-                    stage_flags: ShaderStageFlags::FRAGMENT,
-                    immutable_samplers: false
-                }
+                // hal::pso::DescriptorSetLayoutBinding {
+                //     binding: 1,
+                //     ty: hal::pso::DescriptorType::Sampler,
+                //     count: 1,
+                //     stage_flags: ShaderStageFlags::FRAGMENT,
+                //     immutable_samplers: false
+                // }
             ]
         );
 
@@ -1213,7 +1228,6 @@ impl<B: hal::Backend> Renderer<B> {
                 Some(&*image_present),
             )
         {
-			println!("well boys we hit an error: {:?}", e);
             self.recreate_swapchain = true;
         }
     }
