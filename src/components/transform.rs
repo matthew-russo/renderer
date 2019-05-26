@@ -10,7 +10,7 @@ use cgmath::{
     Deg,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Transform {
     pub position: Vector3<f32>,
     pub scale: Vector3<f32>,

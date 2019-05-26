@@ -149,6 +149,6 @@ fn main() {
         //     .collect();
 
         // renderer.create_command_buffers(transform, renderables);
-        unsafe { renderer.draw_frame(&mut event_handler) };
+        unsafe { renderer.draw_frame(&mut event_handler, &time) };
     }
 }

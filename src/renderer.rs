@@ -26,9 +26,22 @@ use hal::{
 
 use image::load as load_image;
 
+use cgmath::{
+    Deg,
+    Point3,
+    Vector3,
+    Matrix4,
+    SquareMatrix,
+    Transform as cgTransform,
+    perspective,
+};
+
+use crate::timing::Time;
 use crate::primitives::vertex::Vertex;
+use crate::primitives::uniform_buffer_object::UniformBufferObject;
 use crate::events::event_handler::EventHandler;
 use crate::utils::asset_loading;
+use crate::components::transform::Transform;
 
 const DIMS: Extent2D = Extent2D { width: 1024,height: 768 };
 
@@ -195,7 +208,7 @@ impl<B: hal::Backend> RenderPassState<B> {
             .unwrap()
             .device;
 
-        let attachment = hal::pass::Attachment {
+        let color_attachment = hal::pass::Attachment {
             format: Some(swapchain_state.format),
             samples: 1,
             ops: hal::pass::AttachmentOps::new(
@@ -206,9 +219,22 @@ impl<B: hal::Backend> RenderPassState<B> {
             layouts: hal::image::Layout::Undefined..hal::image::Layout::Present,
         };
 
+        let depth_format = hal::format::Format::D32SfloatS8Uint;
+        let depth_attachment = hal::pass::Attachment {
+            format: Some(depth_format),
+            samples: 1,
+            ops: hal::pass::AttachmentOps::new(
+                hal::pass::AttachmentLoadOp::Clear,
+                hal::pass::AttachmentStoreOp::DontCare,
+            ),
+            stencil_ops: hal::pass::AttachmentOps::DONT_CARE,
+            layouts: hal::image::Layout::Undefined..hal::image::Layout::DepthStencilAttachmentOptimal,
+
+        };
+
         let subpass = hal::pass::SubpassDesc {
             colors: &[(0, hal::image::Layout::ColorAttachmentOptimal)],
-            depth_stencil: None,
+            depth_stencil: Some(&(1, hal::image::Layout::DepthStencilAttachmentOptimal)),
             inputs: &[],
             resolves: &[],
             preserves: &[],
@@ -221,7 +247,7 @@ impl<B: hal::Backend> RenderPassState<B> {
         };
 
         let render_pass = unsafe {
-            device.create_render_pass(&[attachment], &[subpass], &[dependency])
+            device.create_render_pass(&[color_attachment, depth_attachment], &[subpass], &[dependency])
         }.expect("Can't create render pass");
     
         Self {
@@ -294,12 +320,83 @@ impl<B: hal::Backend> BufferState<B> {
             }
         }
 
-        BufferState {
+        Self {
             buffer_memory: Some(memory),
             buffer: Some(buffer),
             device_state: device_state.clone(),
             size,
         }
+    }
+
+    fn update_data<T>(&mut self, offset: u64, data_source: &[T])
+        where T: Copy,
+              T: std::fmt::Debug
+    {
+        let device = &self.device_state.read().unwrap().device;
+
+        let stride = std::mem::size_of::<T>() as u64;
+        let upload_size = data_source.len() as u64 * stride;
+
+        assert!(offset + upload_size <= self.size);
+
+        unsafe {
+            let mut data_target = device
+                .acquire_mapping_writer::<T>(
+                    self.buffer_memory.as_ref().unwrap(),
+                    offset..self.size
+                )
+                .unwrap();
+
+            data_target[0..data_source.len()].copy_from_slice(data_source);
+            device.release_mapping_writer(data_target).unwrap();
+        }
+    }
+}
+
+struct Uniform<B: hal::Backend> {
+    buffer: Option<BufferState<B>>,
+    desc: Option<DescSet<B>>,
+}
+
+impl<B: hal::Backend> Uniform<B> {
+    unsafe fn new<T>(
+        device_state: &Arc<RwLock<DeviceState<B>>>,
+        memory_types: &[MemoryType],
+        data: &[T],
+        mut desc: DescSet<B>,
+        binding: u32
+    ) -> Self 
+        where T: Copy,
+              T: std::fmt::Debug
+    {
+        let buffer = BufferState::new(
+            &device_state,
+            &data,
+            hal::buffer::Usage::UNIFORM,
+            memory_types
+        );
+        let buffer = Some(buffer);
+
+        desc.write(
+            &mut device_state.write().unwrap().device,
+            vec![DescSetWrite {
+                binding,
+                array_offset: 0,
+                descriptors: hal::pso::Descriptor::Buffer(
+                    buffer.as_ref().unwrap().get_buffer(),
+                    None..None,
+                )
+            }]
+        );
+
+        Self {
+            buffer,
+            desc: Some(desc)
+        }
+    }
+
+    fn get_layout(&self) -> &B::DescriptorSetLayout {
+        self.desc.as_ref().unwrap().get_layout()
     }
 }
 
@@ -421,7 +518,16 @@ impl<B: hal::Backend> PipelineState<B> {
                     offset: 24,
                 },
             });
-            
+           
+            pipeline_desc.depth_stencil = hal::pso::DepthStencilDesc {
+                depth: hal::pso::DepthTest::On {
+                    fun: hal::pso::Comparison::Less,
+                    write: true
+                },
+                depth_bounds: false,
+                stencil: hal::pso::StencilTest::default()
+            };
+
             device.create_graphics_pipeline(&pipeline_desc, None)
         };
 
@@ -490,14 +596,17 @@ struct FramebufferState<B: hal::Backend> {
     acquire_semaphores: Option<Vec<B::Semaphore>>,
     present_semaphores: Option<Vec<B::Semaphore>>,
     last_ref: usize,
-    device_state: Arc<RwLock<DeviceState<B>>>
+    device_state: Arc<RwLock<DeviceState<B>>>,
+    depth_image_stuff: Option<(B::Image, B::Memory, B::ImageView)>
 }
 
 impl<B: hal::Backend> FramebufferState<B> {
     unsafe fn new(
         device_state: &Arc<RwLock<DeviceState<B>>>,
         swapchain_state: &mut SwapchainState<B>,
-        render_pass_state: &RenderPassState<B>
+        render_pass_state: &RenderPassState<B>,
+        // TODO -> Get rid of / clean up 
+        depth_image_stuff: (B::Image, B::Memory, B::ImageView)
     ) -> Self
     {
         let (frame_images, framebuffers) = {
@@ -513,7 +622,7 @@ impl<B: hal::Backend> FramebufferState<B> {
                 .unwrap()
                 .into_iter()
                 .map(|image| {
-                    let rtv = device_state
+                    let image_view = device_state
                         .read()
                         .unwrap()
                         .device
@@ -525,20 +634,20 @@ impl<B: hal::Backend> FramebufferState<B> {
                             COLOR_RANGE.clone(),
                         )
                         .unwrap();
-                    (image, rtv)
+                    (image, image_view)
                 })
                 .collect::<Vec<_>>();
 
             let fbos = pairs
                 .iter()
-                .map(|&(_, ref rtv)| {
+                .map(|&(_, ref image_view)| {
                     device_state
                         .read()
                         .unwrap()
                         .device
                         .create_framebuffer(
                             render_pass_state.render_pass.as_ref().unwrap(),
-                            Some(rtv),
+                            vec![image_view, &depth_image_stuff.2],
                             extent,
                         )
                         .unwrap()
@@ -586,6 +695,7 @@ impl<B: hal::Backend> FramebufferState<B> {
             acquire_semaphores: Some(acquire_semaphores),
             last_ref: 0,
             device_state: device_state.clone(),
+            depth_image_stuff: Some(depth_image_stuff),
         }
     }
 
@@ -643,6 +753,10 @@ struct ImageState<B: hal::Backend> {
     device_state: Arc<RwLock<DeviceState<B>>>
 }
 
+// TODO -> refactor this -- 
+//      - pass image data in,
+//      - take create_image function into account
+//
 impl<B: hal::Backend> ImageState<B> {
     unsafe fn new(
         desc_set: DescSet<B>,
@@ -651,6 +765,7 @@ impl<B: hal::Backend> ImageState<B> {
         usage: hal::buffer::Usage,
         command_pool: &mut CommandPool<B, Graphics>
     ) -> Self {
+        // TODO -> don't use hard coded image path. pass the image_data in
         let img_data = include_bytes!("data/textures/chalet.jpg");
         let img = load_image(Cursor::new(&img_data[..]), image::JPEG)
             .unwrap()
@@ -663,8 +778,18 @@ impl<B: hal::Backend> ImageState<B> {
         let row_pitch = (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
         let upload_size = (height * row_pitch) as u64;
 
-        let mut image_upload_buffer = device_state.read().unwrap().device.create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC).unwrap();
-        let image_mem_reqs = device_state.read().unwrap().device.get_buffer_requirements(&image_upload_buffer);
+        let mut image_upload_buffer = device_state
+            .read()
+            .unwrap()
+            .device
+            .create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC)
+            .unwrap();
+
+        let image_mem_reqs = device_state
+            .read()
+            .unwrap()
+            .device
+            .get_buffer_requirements(&image_upload_buffer);
 
         let upload_type = adapter_state
             .memory_types
@@ -677,11 +802,24 @@ impl<B: hal::Backend> ImageState<B> {
             .unwrap()
             .into();
 
-        let image_upload_memory = device_state.read().unwrap().device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
+        let image_upload_memory = device_state
+            .read()
+            .unwrap()
+            .device
+            .allocate_memory(upload_type, image_mem_reqs.size)
+            .unwrap();
 
-        device_state.read().unwrap().device.bind_buffer_memory(&image_upload_memory, 0, &mut image_upload_buffer).unwrap();
+        device_state
+            .read()
+            .unwrap()
+            .device
+            .bind_buffer_memory(&image_upload_memory, 0, &mut image_upload_buffer)
+            .unwrap();
 
-        let mut data = device_state.read().unwrap().device
+        let mut data = device_state
+            .read()
+            .unwrap()
+            .device
             .acquire_mapping_writer::<u8>(&image_upload_memory, 0..image_mem_reqs.size)
             .unwrap();
 
@@ -691,9 +829,17 @@ impl<B: hal::Backend> ImageState<B> {
             data[dest_base..dest_base + row.len()].copy_from_slice(row);
         }
 
-        device_state.read().unwrap().device.release_mapping_writer(data).unwrap();
+        device_state
+            .read()
+            .unwrap()
+            .device
+            .release_mapping_writer(data)
+            .unwrap();
 
-        let mut image = device_state.read().unwrap().device
+        let mut image = device_state
+            .read()
+            .unwrap()
+            .device
             .create_image(
                 kind,
                 1,
@@ -717,10 +863,26 @@ impl<B: hal::Backend> ImageState<B> {
             .unwrap()
             .into();
 
-        let image_memory = device_state.read().unwrap().device.allocate_memory(device_type, image_req.size).unwrap();
-        device_state.read().unwrap().device.bind_image_memory(&image_memory, 0, &mut image).unwrap();
+        let image_memory = device_state
+            .read()
+            .unwrap()
+            .device
+            .allocate_memory(device_type, image_req.size)
+            .unwrap();
 
-        let mut transferred_image_fence = device_state.read().unwrap().device.create_fence(false).expect("Can't create fence");
+        device_state
+            .read()
+            .unwrap()
+            .device
+            .bind_image_memory(&image_memory, 0, &mut image)
+            .unwrap();
+
+        let mut transferred_image_fence = device_state
+            .read()
+            .unwrap()
+            .device
+            .create_fence(false)
+            .expect("Can't create fence");
 
         let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::OneShot>();
         cmd_buffer.begin();
@@ -871,6 +1033,10 @@ impl<B: hal::Backend> DescSet<B> {
             device.write_descriptor_sets(descriptor_set_writes);
         }
     }
+
+    fn get_layout(&self) -> &B::DescriptorSetLayout {
+        self.desc_set_layout.layout.as_ref().unwrap()
+    }
 }
 
 struct DescSetWrite<WI> {
@@ -914,6 +1080,7 @@ impl<B: hal::Backend> DescSetLayout<B> {
 
 pub struct Renderer<B: hal::Backend> {
     image_desc_pool: Option<B::DescriptorPool>,
+    uniform_desc_pool: Option<B::DescriptorPool>,
     viewport: Viewport,
 
     backend_state: BackendState<B>,
@@ -923,10 +1090,14 @@ pub struct Renderer<B: hal::Backend> {
     render_pass_state: RenderPassState<B>,
     pipeline_state: PipelineState<B>,
     framebuffer_state: FramebufferState<B>,
-    
+   
+    model_transform: Transform,
+    camera_transform: Transform,
+
     image_state: ImageState<B>,
     vertex_buffer_state: BufferState<B>,
     index_buffer_state: BufferState<B>,
+    uniform: Uniform<B>,
 
     recreate_swapchain: bool,
     resize_dims: Extent2D,
@@ -943,48 +1114,65 @@ impl<B: hal::Backend> Renderer<B> {
             )
         );
 
-        let mut image_desc_pool =
-            device_state
-                .read()
-                .unwrap()
-                .device
-                .create_descriptor_pool(
-                    1,
-                    &[
-                        hal::pso::DescriptorRangeDesc {
-                            ty: hal::pso::DescriptorType::SampledImage,
-                            count: 1
-                        },
-                        hal::pso::DescriptorRangeDesc {
-                            ty: hal::pso::DescriptorType::Sampler,
-                            count: 1
-                        }
-                    ],
-                    hal::pso::DescriptorPoolCreateFlags::empty()
-                )
-                .expect("Can't create descriptor pool");
+        let mut image_desc_pool = device_state
+            .read()
+            .unwrap()
+            .device
+            .create_descriptor_pool(
+                1,
+                &[
+                    hal::pso::DescriptorRangeDesc {
+                        ty: hal::pso::DescriptorType::SampledImage,
+                        count: 1
+                    },
+                    hal::pso::DescriptorRangeDesc {
+                        ty: hal::pso::DescriptorType::Sampler,
+                        count: 1
+                    }
+                ],
+                hal::pso::DescriptorPoolCreateFlags::empty()
+            )
+            .expect("Can't create descriptor pool");
 
         let image_desc_set_layout = DescSetLayout::new(
             &device_state,
-            vec![
-                hal::pso::DescriptorSetLayoutBinding {
-                    binding: 0,
-                    ty: hal::pso::DescriptorType::CombinedImageSampler,
-                    count: 1,
-                    stage_flags: ShaderStageFlags::FRAGMENT,
-                    immutable_samplers: false
-                },
-                // hal::pso::DescriptorSetLayoutBinding {
-                //     binding: 1,
-                //     ty: hal::pso::DescriptorType::Sampler,
-                //     count: 1,
-                //     stage_flags: ShaderStageFlags::FRAGMENT,
-                //     immutable_samplers: false
-                // }
-            ]
+            vec![hal::pso::DescriptorSetLayoutBinding {
+                binding: 0,
+                ty: hal::pso::DescriptorType::CombinedImageSampler,
+                count: 1,
+                stage_flags: ShaderStageFlags::FRAGMENT,
+                immutable_samplers: false
+            }]
         );
 
         let image_desc_set = image_desc_set_layout.create_set(&mut image_desc_pool);
+
+        let mut uniform_desc_pool = device_state
+            .read()
+            .unwrap()
+            .device
+            .create_descriptor_pool(
+                1,
+                &[hal::pso::DescriptorRangeDesc {
+                    ty: hal::pso::DescriptorType::UniformBuffer,
+                    count: 1
+                }],
+                hal::pso::DescriptorPoolCreateFlags::empty()
+            )
+            .expect("Can't create descriptor pool");
+
+        let uniform_desc_set_layout = DescSetLayout::new(
+            &device_state,
+            vec![hal::pso::DescriptorSetLayoutBinding {
+                binding: 0,
+                ty: hal::pso::DescriptorType::UniformBuffer,
+                count: 1,
+                stage_flags: ShaderStageFlags::VERTEX,
+                immutable_samplers: false,
+            }]
+        );
+
+        let uniform_desc_set = uniform_desc_set_layout.create_set(&mut uniform_desc_pool);
 
         let mut staging_pool = device_state
             .read()
@@ -1030,14 +1218,48 @@ impl<B: hal::Backend> Renderer<B> {
             hal::buffer::Usage::INDEX,
             &backend_state.adapter_state.memory_types,
         );
+     
+        let mut camera_transform = Transform::new();
+        camera_transform.translate(Vector3::new(0.0, 0.0, 6.0));
+        let mut model_transform = Transform::new();
+        model_transform.rotate(0.0, 90.0, 0.0);
+        let uniform_buffer_object = UniformBufferObject::new(
+            Matrix4::identity(),
+            Matrix4::identity(),
+            Matrix4::identity()
+        );
+
+        let uniform = Uniform::new(
+            &device_state,
+            &backend_state.adapter_state.memory_types,
+            &[uniform_buffer_object],
+            uniform_desc_set,
+            0
+        );
 
         let mut swapchain_state = SwapchainState::new(&mut backend_state, &device_state);
         let render_pass_state = RenderPassState::new(&device_state, &swapchain_state);
-        let framebuffer_state = FramebufferState::new(&device_state, &mut swapchain_state, &render_pass_state);
+
+        let depth_image_stuff = create_image_stuff::<B>(
+            &device_state.read().unwrap().device,
+            &backend_state.adapter_state.memory_types,
+            swapchain_state.extent.width,
+            swapchain_state.extent.height,
+            hal::format::Format::D32SfloatS8Uint,
+            hal::image::Usage::DEPTH_STENCIL_ATTACHMENT,
+            hal::format::Aspects::DEPTH | Aspects::STENCIL
+        );
+        let framebuffer_state = FramebufferState::new(
+            &device_state,
+            &mut swapchain_state,
+            &render_pass_state,
+            depth_image_stuff
+        );
+        
         let pipeline_state = PipelineState::new(
             &device_state,
             render_pass_state.render_pass.as_ref().unwrap(),
-            vec![image_state.get_layout()]
+            vec![image_state.get_layout(), uniform.get_layout()]
         );
         let viewport = Self::create_viewport(&swapchain_state);
 
@@ -1048,6 +1270,7 @@ impl<B: hal::Backend> Renderer<B> {
         
         Self {
             image_desc_pool: Some(image_desc_pool),
+            uniform_desc_pool: Some(uniform_desc_pool),
             viewport,
 
             backend_state,
@@ -1058,9 +1281,13 @@ impl<B: hal::Backend> Renderer<B> {
             pipeline_state,
             framebuffer_state,
 
+            camera_transform,
+            model_transform,
+
             image_state,
             vertex_buffer_state,
             index_buffer_state,
+            uniform,
 
             recreate_swapchain: false,
             resize_dims,
@@ -1079,7 +1306,37 @@ impl<B: hal::Backend> Renderer<B> {
         }
     }
 
-    pub unsafe fn draw_frame(&mut self, events_loop: &mut Arc<RwLock<EventHandler>>) {
+    pub fn update_uniform_buffer_object(&self, dimensions: [f32;2], model_transform: &Transform, camera_transform: &Transform) -> UniformBufferObject {
+        let translation = Matrix4::from_translation(model_transform.position);
+        // let rotation = Matrix4::from::<Quaternion<f32>>(&model_transform.rotation);
+
+        let scale = Matrix4::from_nonuniform_scale(model_transform.scale.x, model_transform.scale.y, model_transform.scale.z);
+        let model = Matrix4::identity()
+            .concat(&translation)
+            .concat(&model_transform.rotation.into())
+            .concat(&scale);
+
+
+        let position = camera_transform.position;
+        let view = Matrix4::look_at(
+            Point3::new(position.x, position.y, position.z),
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0)
+        );
+
+        let mut proj = perspective(
+            Deg(45.0),
+            dimensions[0] / dimensions[1],
+            0.1,
+            1000.0
+        );
+
+        proj.y.y *= -1.0;
+
+        UniformBufferObject::new(model, view, proj)
+    }
+
+    pub unsafe fn draw_frame(&mut self, events_loop: &mut Arc<RwLock<EventHandler>>, time: &Arc<RwLock<Time>>) {
         self.window_state.events_loop.poll_events(|winit_event| {
             if let winit::Event::WindowEvent { event, ..  } = winit_event {
                 match event {
@@ -1141,6 +1398,13 @@ impl<B: hal::Backend> Renderer<B> {
             self.recreate_swapchain();
             self.recreate_swapchain = false; 
         }
+
+        let dims = [DIMS.width as f32, DIMS.height as f32];
+        let delta_time = time.read().unwrap().delta_time;
+        let rot_amount = delta_time as f32 * 0.05;
+        self.model_transform.rotate(0.0, rot_amount, 0.0);
+        let new_ubo = self.update_uniform_buffer_object(dims, &self.model_transform, &self.camera_transform);
+        self.uniform.buffer.as_mut().unwrap().update_data(0, &[new_ubo]);
 
         let sem_index = self.framebuffer_state.next_acq_pre_pair_index();
 
@@ -1207,6 +1471,7 @@ impl<B: hal::Backend> Renderer<B> {
             0,
             vec![
                 &self.image_state.desc_set.descriptor_set,
+                &self.uniform.desc.as_ref().unwrap().descriptor_set
             ],
             &[],
         ); //TODO
@@ -1216,9 +1481,10 @@ impl<B: hal::Backend> Renderer<B> {
                 self.render_pass_state.render_pass.as_ref().unwrap(),
                 framebuffer,
                 self.viewport.rect,
-                &[hal::command::ClearValue::Color(hal::command::ClearColor::Float([
-                    0.6, 0.2, 0.0, 1.0,
-                ]))],
+                &[
+                    hal::command::ClearValue::Color(hal::command::ClearColor::Float([0.6, 0.2, 0.0, 1.0])),
+                    hal::command::ClearValue::DepthStencil(hal::command::ClearDepthStencil(1.0, 0))
+                ],
             );
             encoder.draw_indexed(0..(self.index_buffer_state.size as u32), 0, 0..1);
         }
@@ -1259,10 +1525,21 @@ impl<B: hal::Backend> Renderer<B> {
 
         self.render_pass_state = RenderPassState::new(&self.device_state, &self.swapchain_state);
 
+        let depth_image_stuff = create_image_stuff::<B>(
+            &self.device_state.read().unwrap().device,
+            &self.backend_state.adapter_state.memory_types,
+            self.swapchain_state.extent.width,
+            self.swapchain_state.extent.height,
+            hal::format::Format::D32SfloatS8Uint,
+            hal::image::Usage::DEPTH_STENCIL_ATTACHMENT,
+            hal::format::Aspects::DEPTH | Aspects::STENCIL
+        );
+
         self.framebuffer_state = FramebufferState::new(
             &self.device_state,
             &mut self.swapchain_state,
             &self.render_pass_state,
+            depth_image_stuff
         );
 
         self.pipeline_state = PipelineState::new(
@@ -1275,6 +1552,67 @@ impl<B: hal::Backend> Renderer<B> {
     }
 }
 
+// TODO -> get rid of this
+/// Create an image, image memory, and image view with the given properties.
+pub unsafe fn create_image_stuff<B: hal::Backend>(
+    device: &B::Device,
+    memory_types: &[MemoryType],
+    width: u32,
+    height: u32,
+    format: Format,
+    usage: hal::image::Usage,
+    aspects: Aspects,
+) -> (B::Image, B::Memory, B::ImageView) {
+    let kind = hal::image::Kind::D2(width, height, 1, 1);
+
+    let mut image = device
+        .create_image(
+            kind,
+            1,
+            format,
+            hal::image::Tiling::Optimal,
+            usage,
+            hal::image::ViewCapabilities::empty(),
+        )
+        .expect("Failed to create unbound image");
+
+    let image_req = device.get_image_requirements(&image);
+
+    let device_type = memory_types
+        .iter()
+        .enumerate()
+        .position(|(id, memory_type)| {
+            image_req.type_mask & (1 << id) != 0
+                && memory_type.properties.contains(hal::memory::Properties::DEVICE_LOCAL)
+        })
+        .unwrap()
+        .into();
+
+    let image_memory = device
+        .allocate_memory(device_type, image_req.size)
+        .expect("Failed to allocate image");
+
+    device
+        .bind_image_memory(&image_memory, 0, &mut image)
+        .expect("Failed to bind image");
+
+    let image_view = device
+        .create_image_view(
+            &image,
+            hal::image::ViewKind::D2,
+            format,
+            Swizzle::NO,
+            hal::image::SubresourceRange {
+                aspects,
+                levels: 0..1,
+                layers: 0..1,
+            },
+        )
+        .expect("Failed to create image view");
+
+    (image, image_memory, image_view)
+}
+
 impl<B: hal::Backend> Drop for Renderer<B> {
     fn drop(&mut self) {
         self.device_state.read().unwrap().device.wait_idle().unwrap();
@@ -1284,6 +1622,12 @@ impl<B: hal::Backend> Drop for Renderer<B> {
                 .unwrap()
                 .device
                 .destroy_descriptor_pool(self.image_desc_pool.take().unwrap());
+
+            self.device_state
+                .read()
+                .unwrap()
+                .device
+                .destroy_descriptor_pool(self.uniform_desc_pool.take().unwrap());
         }
     }
 }
@@ -1318,7 +1662,6 @@ impl<B: hal::Backend> Drop for DescSetLayout<B> {
         }
     }
 }
-
 
 impl<B: hal::Backend> Drop for ImageState<B> {
     fn drop(&mut self) {
@@ -1388,6 +1731,11 @@ impl<B: hal::Backend> Drop for FramebufferState<B> {
             for (_, rtv) in self.frame_images.take().unwrap() {
                 device.destroy_image_view(rtv);
             }
+
+            let depth_image_stuff = self.depth_image_stuff.take().unwrap();
+            device.destroy_image_view(depth_image_stuff.2);
+            device.destroy_image(depth_image_stuff.0);
+            device.free_memory(depth_image_stuff.1);
         }
     }
 }

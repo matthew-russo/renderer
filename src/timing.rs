@@ -3,6 +3,7 @@ use std::time::Instant;
 pub struct Time {
    start_time: Instant,
    last_frame: Instant,
+   pub delta_time: u128,
 }
 
 impl Time {
@@ -12,12 +13,8 @@ impl Time {
       Time {
          start_time: now,
          last_frame: now,
+         delta_time: 0,
       }
-   }
-
-   pub fn delta_time(&self) -> u128 {
-      let duration = Instant::now().duration_since(self.last_frame);
-      duration.as_millis()
    }
 
    pub fn total_time(&self) -> u128 {
@@ -26,6 +23,10 @@ impl Time {
    }
 
    pub fn tick(&mut self) {
-      self.last_frame = Instant::now();
+      let now = Instant::now();
+      self.delta_time = now
+          .duration_since(self.last_frame)
+          .as_millis();
+      self.last_frame = now;
    }
 }
