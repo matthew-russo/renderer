@@ -1201,9 +1201,7 @@ impl<B: hal::Backend> Renderer<B> {
             .device
             .destroy_command_pool(staging_pool.into_raw());
 
-        let home = std::env::var("HOME").unwrap();
-        let model_path = format!("{}/Downloads/chalet.obj", home);
-        let model = asset_loading::load_model(Path::new(&model_path)); 
+        let model = asset_loading::load_model(Path::new("src/data/models/chalet.obj")); 
 
         let vertex_buffer_state = BufferState::new(
             &device_state,
