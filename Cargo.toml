@@ -22,6 +22,7 @@ specs = "0.14.3"
 cgmath = "0.17.0"
 rand = "0.6.4"
 uuid = { version = "0.7", features = ["v4"] }
+log = "0.4.6"
 env_logger = "0.6.1"
 
 [dependencies.gfx-backend-gl]

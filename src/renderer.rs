@@ -38,9 +38,9 @@ use cgmath::{
 
 use crate::timing::Time;
 use crate::primitives::vertex::Vertex;
+use crate::primitives::three_d::model::Model;
 use crate::primitives::uniform_buffer_object::UniformBufferObject;
 use crate::events::event_handler::EventHandler;
-use crate::utils::asset_loading;
 use crate::components::transform::Transform;
 
 const DIMS: Extent2D = Extent2D { width: 1024,height: 768 };
@@ -1092,7 +1092,7 @@ pub struct Renderer<B: hal::Backend> {
     framebuffer_state: FramebufferState<B>,
    
     model_transform: Transform,
-    camera_transform: Transform,
+    camera_transform: Option<Transform>,
 
     image_state: ImageState<B>,
     vertex_buffer_state: BufferState<B>,
@@ -1201,7 +1201,12 @@ impl<B: hal::Backend> Renderer<B> {
             .device
             .destroy_command_pool(staging_pool.into_raw());
 
-        let model = asset_loading::load_model(Path::new("src/data/models/chalet.obj")); 
+        // let model = Model::load(
+        //     "first_model".to_string(),
+        //     Path::new("src/data/models/chalet.obj")
+        // );
+
+        let (model_transform, model) = crate::primitives::three_d::cube::Cube::new();
 
         let vertex_buffer_state = BufferState::new(
             &device_state,
@@ -1219,8 +1224,10 @@ impl<B: hal::Backend> Renderer<B> {
      
         let mut camera_transform = Transform::new();
         camera_transform.translate(Vector3::new(0.0, 0.0, 6.0));
-        let mut model_transform = Transform::new();
-        model_transform.rotate(0.0, 90.0, 0.0);
+        
+        // let mut model_transform = Transform::new();
+        // model_transform.rotate(0.0, 90.0, 0.0);
+        
         let uniform_buffer_object = UniformBufferObject::new(
             Matrix4::identity(),
             Matrix4::identity(),
@@ -1279,7 +1286,7 @@ impl<B: hal::Backend> Renderer<B> {
             pipeline_state,
             framebuffer_state,
 
-            camera_transform,
+            camera_transform: Some(camera_transform),
             model_transform,
 
             image_state,
@@ -1304,6 +1311,32 @@ impl<B: hal::Backend> Renderer<B> {
         }
     }
 
+    // Pitch must be in the range of [-90 ... 90] degrees and 
+    // yaw must be in the range of [0 ... 360] degrees.
+    // Pitch and yaw variables must be expressed in radians.
+    pub fn fps_view_matrix(eye: Vector3<f32>, pitch_rad: cgmath::Rad<f32>, yaw_rad: cgmath::Rad<f32>) -> Matrix4<f32> {
+        use cgmath::Angle;
+
+        let cos_pitch = pitch_rad.cos();
+        let sin_pitch = pitch_rad.sin();
+
+        let cos_yaw = yaw_rad.cos();
+        let sin_yaw = yaw_rad.sin();
+
+        let x_axis = Vector3::new(cos_yaw, 0.0, -sin_yaw);
+        let y_axis = Vector3::new(sin_yaw * sin_pitch, cos_pitch, cos_yaw * sin_pitch);
+        let z_axis = Vector3::new(sin_yaw * cos_pitch, -sin_pitch, cos_pitch * cos_yaw);
+
+        let view_matrix = Matrix4::new(
+            x_axis.x, y_axis.x, z_axis.x, 0.0,
+            x_axis.y, y_axis.y, z_axis.y, 0.0,
+            x_axis.z, y_axis.z, z_axis.z, 0.0,
+            cgmath::dot(x_axis, eye) * -1.0, cgmath::dot(y_axis, eye) * -1.0, cgmath::dot(z_axis, eye) * -1.0, 1.0
+        );
+
+        view_matrix
+    }
+
     pub fn update_uniform_buffer_object(&self, dimensions: [f32;2], model_transform: &Transform, camera_transform: &Transform) -> UniformBufferObject {
         let translation = Matrix4::from_translation(model_transform.position);
         // let rotation = Matrix4::from::<Quaternion<f32>>(&model_transform.rotation);
@@ -1316,11 +1349,19 @@ impl<B: hal::Backend> Renderer<B> {
 
 
         let position = camera_transform.position;
-        let view = Matrix4::look_at(
-            Point3::new(position.x, position.y, position.z),
-            Point3::new(0.0, 0.0, 0.0),
-            Vector3::new(0.0, 1.0, 0.0)
-        );
+        let rotation = cgmath::Euler::from(camera_transform.rotation);
+
+        let view = Self::fps_view_matrix(position, rotation.y, rotation.x);
+
+        // let view = Matrix4::look_at(
+        //     Point3::new(position.x, position.y, position.z),
+        //     Point3::new(
+        //         Deg::from(rotation.x).0,
+        //         Deg::from(rotation.y).0,
+        //         Deg::from(rotation.z).0
+        //     ),
+        //     Vector3::new(0.0, 1.0, 0.0)
+        // );
 
         let mut proj = perspective(
             Deg(45.0),
@@ -1335,33 +1376,115 @@ impl<B: hal::Backend> Renderer<B> {
     }
 
     pub unsafe fn draw_frame(&mut self, events_loop: &mut Arc<RwLock<EventHandler>>, time: &Arc<RwLock<Time>>) {
+        let mut camera_transform = self.camera_transform.take().unwrap();
+
         self.window_state.events_loop.poll_events(|winit_event| {
-            if let winit::Event::WindowEvent { event, ..  } = winit_event {
-                match event {
-                    winit::WindowEvent::KeyboardInput {
-                        input:winit::KeyboardInput {
+            match winit_event {
+                winit::Event::WindowEvent { event, .. } => {
+                    match event {
+                        // FORWARD
+                        winit::WindowEvent::KeyboardInput {
+                            input: winit::KeyboardInput {
+                                virtual_keycode: Some(
+                                    winit::VirtualKeyCode::W
+                                ),
+                                ..
+                            },
+                            ..
+                        } => {
+                            let forward = camera_transform.forward();
+                            camera_transform.translate(forward * -1.0)
+                        },
+                        
+                        // BACKWARD
+                        winit::WindowEvent::KeyboardInput {
+                            input: winit::KeyboardInput {
+                                virtual_keycode: Some(
+                                    winit::VirtualKeyCode::S
+                                ),
+                                ..
+                            },
+                            ..
+                        } => {
+                            let forward = camera_transform.forward();
+                            camera_transform.translate(forward)
+                        }
+
+                        // LEFT
+                        winit::WindowEvent::KeyboardInput {
+                            input: winit::KeyboardInput {
+                                virtual_keycode: Some(
+                                    winit::VirtualKeyCode::A
+                                ),
+                                ..
+                            },
+                            ..
+                        } => camera_transform.translate(Vector3::unit_x() * -1.0),
+
+                        // RIGHT
+                        winit::WindowEvent::KeyboardInput {
+                            input: winit::KeyboardInput {
+                                virtual_keycode: Some(
+                                    winit::VirtualKeyCode::D
+                                ),
+                                ..
+                            },
+                            ..
+                        } => camera_transform.translate(Vector3::unit_x()),
+
+                        // UP
+                        winit::WindowEvent::KeyboardInput {
+                            input: winit::KeyboardInput {
+                                virtual_keycode: Some(
+                                    winit::VirtualKeyCode::Space
+                                ),
+                                ..
+                            },
+                            ..
+                        } => camera_transform.translate(Vector3::unit_y()),
+
+                        // DOWN
+                        winit::WindowEvent::KeyboardInput {
+                            input: winit::KeyboardInput {
+                                virtual_keycode: Some(
+                                    winit::VirtualKeyCode::LShift
+                                ),
+                                ..
+                            },
+                            ..
+                        } => camera_transform.translate(Vector3::unit_y() * -1.0),
+
+
+                        winit::WindowEvent::KeyboardInput {
+                            input: winit::KeyboardInput {
                                 virtual_keycode: Some(winit::VirtualKeyCode::Escape),
                                 ..
                             },
-                        ..
+                            ..
+                        }
+                        | winit::WindowEvent::CloseRequested => panic!("matthew's bad way of handling exit"),
+                        _ => (),
+   
                     }
-                    | winit::WindowEvent::CloseRequested => panic!("matthew's bad way of handling exit"),
-                    // winit::WindowEvent::Resized(dims) => {
-                    //     println!("resized to: {:?}", dims);
+                },
+                winit::Event::DeviceEvent { event, .. } => {
+                    match event {
+                        winit::DeviceEvent::MouseMotion { delta } => {
+                            let (mut x, mut y) = delta;
 
-                    //     #[cfg(feature = "gl")]
-                    //     self.surface
-                    //         .get_window()
-                    //         .resize(dims.to_physical(self.surface.get_window().get_hidpi_factor()));
+                            x *= -0.1; 
+                            y *= -0.1; 
 
-                    //     self.recreate_swapchain = true;
-                    //     self.resize_dims.width = dims.width as u32;
-                    //     self.resize_dims.height = dims.height as u32;
-                    // }
-                    _ => (),
+                            camera_transform.rotate(x as f32, y as f32, 0.0);
+                        }
+                        _ => (),
+                    }
                 }
-            }
+                _ => (),
+            };
         });
+
+        self.camera_transform = Some(camera_transform);
 
         // TODO -> figure out event handling
         // events_loop.lock().unwrap().poll_events(|event| { if let winit::Event::WindowEvent { event, .. } = event {
@@ -1401,7 +1524,7 @@ impl<B: hal::Backend> Renderer<B> {
         let delta_time = time.read().unwrap().delta_time;
         let rot_amount = delta_time as f32 * 0.05;
         self.model_transform.rotate(0.0, rot_amount, 0.0);
-        let new_ubo = self.update_uniform_buffer_object(dims, &self.model_transform, &self.camera_transform);
+        let new_ubo = self.update_uniform_buffer_object(dims, &self.model_transform, self.camera_transform.as_ref().unwrap());
         self.uniform.buffer.as_mut().unwrap().update_data(0, &[new_ubo]);
 
         let sem_index = self.framebuffer_state.next_acq_pre_pair_index();

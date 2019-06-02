@@ -8,6 +8,7 @@ use cgmath::{
     Quaternion,
     Euler,
     Deg,
+    Angle
 };
 
 #[derive(Clone, Debug)]
@@ -44,5 +45,15 @@ impl Transform {
 
         self.rotation = self.rotation * to_rotate_by;
         // println!("rotation: {:?}", Euler::from(self.rotation));
+    }
+
+    pub fn forward(&self) -> Vector3<f32> {
+        let rotation = Euler::from(self.rotation);
+
+        Vector3::new(
+            rotation.x.sin(),
+            rotation.y.tan() * -1.0,
+            rotation.x.cos(),
+        )
     }
 }

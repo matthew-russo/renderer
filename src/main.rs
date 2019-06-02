@@ -41,12 +41,12 @@ extern crate cgmath;
 extern crate uuid;
 
 #[macro_use]
+extern crate log;
+#[macro_use]
 extern crate env_logger;
-
 
 mod events;
 mod primitives;
-mod utils;
 mod renderer;
 mod components;
 mod timing;
