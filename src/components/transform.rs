@@ -4,12 +4,17 @@ use specs::{
 };
 
 use cgmath::{
+    SquareMatrix,
+    Transform as cgTransform,
+    Matrix4,
     Vector3,
     Quaternion,
     Euler,
     Deg,
     Angle
 };
+
+use crate::primitives::uniform_buffer_object::ObjectUniformBufferObject;
 
 #[derive(Clone, Debug)]
 pub struct Transform {
@@ -55,5 +60,19 @@ impl Transform {
             rotation.y.tan() * -1.0,
             rotation.x.cos(),
         )
+    }
+
+    // TODO -> Turn this into From and Into impls!
+    pub fn to_ubo(&self) -> ObjectUniformBufferObject {
+        let translation = Matrix4::from_translation(self.position);
+
+        let scale = Matrix4::from_nonuniform_scale(self.scale.x, self.scale.y, self.scale.z);
+
+        let mat = Matrix4::identity()
+            .concat(&translation)
+            .concat(&self.rotation.into())
+            .concat(&scale);
+
+        ObjectUniformBufferObject::new(mat)
     }
 }

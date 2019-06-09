@@ -1,7 +1,6 @@
 use std::fs;
 use std::sync::{Arc, RwLock};
 use std::io::{Cursor, Read};
-use std::path::Path;
 
 use hal::format::{Format, AsFormat, ChannelType, Rgba8Srgb, Swizzle, Aspects};
 use hal::pass::Subpass;
@@ -32,28 +31,23 @@ use cgmath::{
     Vector3,
     Matrix4,
     SquareMatrix,
-    Transform as cgTransform,
     perspective,
 };
 
 use crate::timing::Time;
 use crate::primitives::vertex::Vertex;
+
+// TODO -> need to reconcile Mesh && Model
+use crate::components::mesh::Mesh;
 use crate::primitives::three_d::model::Model;
-use crate::primitives::uniform_buffer_object::UniformBufferObject;
+use crate::primitives::uniform_buffer_object::{
+    CameraUniformBufferObject,
+    ObjectUniformBufferObject
+};
 use crate::events::event_handler::EventHandler;
 use crate::components::transform::Transform;
 
 const DIMS: Extent2D = Extent2D { width: 1024,height: 768 };
-
-const QUAD: [Vertex; 6] = [
-    Vertex { in_position: [ -0.5, 0.33, 0.0 ], in_color: [1.0, 1.0, 1.0], in_tex_coord: [0.0, 1.0] },
-    Vertex { in_position: [  0.5, 0.33, 0.0 ], in_color: [1.0, 1.0, 1.0], in_tex_coord: [1.0, 1.0] },
-    Vertex { in_position: [  0.5,-0.33, 0.0 ], in_color: [1.0, 1.0, 1.0], in_tex_coord: [1.0, 0.0] },
-
-    Vertex { in_position: [ -0.5, 0.33, 0.0 ], in_color: [1.0, 1.0, 1.0], in_tex_coord: [0.0, 1.0] },
-    Vertex { in_position: [  0.5,-0.33, 0.0 ], in_color: [1.0, 1.0, 1.0], in_tex_coord: [1.0, 0.0] },
-    Vertex { in_position: [ -0.5,-0.33, 0.0 ], in_color: [1.0, 1.0, 1.0], in_tex_coord: [0.0, 0.0] },
-];
 
 const COLOR_RANGE: hal::image::SubresourceRange = hal::image::SubresourceRange {
     aspects: Aspects::COLOR,
@@ -284,6 +278,8 @@ impl<B: hal::Backend> BufferState<B> {
 
         let stride = std::mem::size_of::<T>() as u64;
         let upload_size = data_source.len() as u64 * stride;
+
+        println!("UPLOAD SIZE: {:?}", upload_size);
 
         {
             let device = &device_state.read().unwrap().device;
@@ -592,12 +588,13 @@ struct FramebufferState<B: hal::Backend> {
     framebuffers: Option<Vec<B::Framebuffer>>,
     framebuffer_fences: Option<Vec<B::Fence>>,
     command_pools: Option<Vec<hal::CommandPool<B, hal::Graphics>>>,
+    command_buffers: Option<Vec<hal::command::CommandBuffer<B, hal::Graphics, hal::command::MultiShot>>>,
     frame_images: Option<Vec<(B::Image, B::ImageView)>>,
     acquire_semaphores: Option<Vec<B::Semaphore>>,
     present_semaphores: Option<Vec<B::Semaphore>>,
     last_ref: usize,
     device_state: Arc<RwLock<DeviceState<B>>>,
-    depth_image_stuff: Option<(B::Image, B::Memory, B::ImageView)>
+    depth_image_stuff: Option<(B::Image, B::Memory, B::ImageView)>,
 }
 
 impl<B: hal::Backend> FramebufferState<B> {
@@ -691,6 +688,7 @@ impl<B: hal::Backend> FramebufferState<B> {
             framebuffers: Some(framebuffers),
             framebuffer_fences: Some(fences),
             command_pools: Some(command_pools),
+            command_buffers: None,
             present_semaphores: Some(present_semaphores),
             acquire_semaphores: Some(acquire_semaphores),
             last_ref: 0,
@@ -716,8 +714,7 @@ impl<B: hal::Backend> FramebufferState<B> {
     ) -> (
         Option<(
             &mut B::Fence,
-            &mut B::Framebuffer,
-            &mut hal::CommandPool<B, ::hal::Graphics>,
+            &mut hal::command::CommandBuffer<B, hal::Graphics, hal::command::MultiShot>
         )>,
         Option<(&mut B::Semaphore, &mut B::Semaphore)>,
     ) {
@@ -725,8 +722,7 @@ impl<B: hal::Backend> FramebufferState<B> {
             if let Some(fid) = frame_id {
                 Some((
                     &mut self.framebuffer_fences.as_mut().unwrap()[fid],
-                    &mut self.framebuffers.as_mut().unwrap()[fid],
-                    &mut self.command_pools.as_mut().unwrap()[fid],
+                    &mut self.command_buffers.as_mut().unwrap()[fid]
                 ))
             } else {
                 None
@@ -734,7 +730,7 @@ impl<B: hal::Backend> FramebufferState<B> {
             if let Some(sid) = sem_index {
                 Some((
                     &mut self.acquire_semaphores.as_mut().unwrap()[sid],
-                    &mut self.present_semaphores.as_mut().unwrap()[sid],
+                    &mut self.present_semaphores.as_mut().unwrap()[sid]
                 ))
             } else {
                 None
@@ -1091,13 +1087,13 @@ pub struct Renderer<B: hal::Backend> {
     pipeline_state: PipelineState<B>,
     framebuffer_state: FramebufferState<B>,
    
-    model_transform: Transform,
     camera_transform: Option<Transform>,
 
     image_state: ImageState<B>,
-    vertex_buffer_state: BufferState<B>,
-    index_buffer_state: BufferState<B>,
-    uniform: Uniform<B>,
+    vertex_buffer_state: Option<BufferState<B>>,
+    index_buffer_state: Option<BufferState<B>>,
+    camera_uniform: Uniform<B>,
+    object_uniform: Uniform<B>,
 
     recreate_swapchain: bool,
     resize_dims: Extent2D,
@@ -1152,16 +1148,16 @@ impl<B: hal::Backend> Renderer<B> {
             .unwrap()
             .device
             .create_descriptor_pool(
-                1,
+                2,
                 &[hal::pso::DescriptorRangeDesc {
                     ty: hal::pso::DescriptorType::UniformBuffer,
-                    count: 1
+                    count: 2
                 }],
                 hal::pso::DescriptorPoolCreateFlags::empty()
             )
             .expect("Can't create descriptor pool");
 
-        let uniform_desc_set_layout = DescSetLayout::new(
+        let camera_uniform_desc_set_layout = DescSetLayout::new(
             &device_state,
             vec![hal::pso::DescriptorSetLayoutBinding {
                 binding: 0,
@@ -1172,7 +1168,20 @@ impl<B: hal::Backend> Renderer<B> {
             }]
         );
 
-        let uniform_desc_set = uniform_desc_set_layout.create_set(&mut uniform_desc_pool);
+        let camera_uniform_desc_set = camera_uniform_desc_set_layout.create_set(&mut uniform_desc_pool);
+
+        let object_uniform_desc_set_layout = DescSetLayout::new(
+            &device_state,
+            vec![hal::pso::DescriptorSetLayoutBinding {
+                binding: 0,
+                ty: hal::pso::DescriptorType::UniformBufferDynamic,
+                count: 1,
+                stage_flags: ShaderStageFlags::VERTEX,
+                immutable_samplers: false,
+            }]
+        );
+
+        let object_uniform_desc_set = object_uniform_desc_set_layout.create_set(&mut uniform_desc_pool);
 
         let mut staging_pool = device_state
             .read()
@@ -1200,45 +1209,31 @@ impl<B: hal::Backend> Renderer<B> {
             .unwrap()
             .device
             .destroy_command_pool(staging_pool.into_raw());
-
-        // let model = Model::load(
-        //     "first_model".to_string(),
-        //     Path::new("src/data/models/chalet.obj")
-        // );
-
-        let (model_transform, model) = crate::primitives::three_d::cube::Cube::new();
-
-        let vertex_buffer_state = BufferState::new(
-            &device_state,
-            &model.vertices,
-            hal::buffer::Usage::VERTEX,
-            &backend_state.adapter_state.memory_types,
-        );
-       
-        let index_buffer_state = BufferState::new(
-            &device_state,
-            &model.indices,
-            hal::buffer::Usage::INDEX,
-            &backend_state.adapter_state.memory_types,
-        );
-     
+    
+        // TODO -> merge the camera transform and ubo initialization
         let mut camera_transform = Transform::new();
         camera_transform.translate(Vector3::new(0.0, 0.0, 6.0));
-        
-        // let mut model_transform = Transform::new();
-        // model_transform.rotate(0.0, 90.0, 0.0);
-        
-        let uniform_buffer_object = UniformBufferObject::new(
-            Matrix4::identity(),
+        let camera_uniform_buffer_object = CameraUniformBufferObject::new(
             Matrix4::identity(),
             Matrix4::identity()
         );
+        let object_uniform_buffer_object = ObjectUniformBufferObject::new(
+            Matrix4::identity()
+        );
 
-        let uniform = Uniform::new(
+        let camera_uniform = Uniform::new(
             &device_state,
             &backend_state.adapter_state.memory_types,
-            &[uniform_buffer_object],
-            uniform_desc_set,
+            &[camera_uniform_buffer_object],
+            camera_uniform_desc_set,
+            0
+        );
+
+        let object_uniform = Uniform::new(
+            &device_state,
+            &backend_state.adapter_state.memory_types,
+            &[object_uniform_buffer_object, object_uniform_buffer_object],
+            object_uniform_desc_set,
             0
         );
 
@@ -1264,7 +1259,11 @@ impl<B: hal::Backend> Renderer<B> {
         let pipeline_state = PipelineState::new(
             &device_state,
             render_pass_state.render_pass.as_ref().unwrap(),
-            vec![image_state.get_layout(), uniform.get_layout()]
+            vec![
+                image_state.get_layout(),
+                camera_uniform.get_layout(),
+                object_uniform.get_layout()
+            ]
         );
         let viewport = Self::create_viewport(&swapchain_state);
 
@@ -1287,12 +1286,12 @@ impl<B: hal::Backend> Renderer<B> {
             framebuffer_state,
 
             camera_transform: Some(camera_transform),
-            model_transform,
 
             image_state,
-            vertex_buffer_state,
-            index_buffer_state,
-            uniform,
+            vertex_buffer_state: None,
+            index_buffer_state: None,
+            camera_uniform,
+            object_uniform,
 
             recreate_swapchain: false,
             resize_dims,
@@ -1337,17 +1336,7 @@ impl<B: hal::Backend> Renderer<B> {
         view_matrix
     }
 
-    pub fn update_uniform_buffer_object(&self, dimensions: [f32;2], model_transform: &Transform, camera_transform: &Transform) -> UniformBufferObject {
-        let translation = Matrix4::from_translation(model_transform.position);
-        // let rotation = Matrix4::from::<Quaternion<f32>>(&model_transform.rotation);
-
-        let scale = Matrix4::from_nonuniform_scale(model_transform.scale.x, model_transform.scale.y, model_transform.scale.z);
-        let model = Matrix4::identity()
-            .concat(&translation)
-            .concat(&model_transform.rotation.into())
-            .concat(&scale);
-
-
+    pub fn update_camera_uniform_buffer_object(&self, dimensions: [f32;2], camera_transform: &Transform) -> CameraUniformBufferObject {
         let position = camera_transform.position;
         let rotation = cgmath::Euler::from(camera_transform.rotation);
 
@@ -1372,148 +1361,318 @@ impl<B: hal::Backend> Renderer<B> {
 
         proj.y.y *= -1.0;
 
-        UniformBufferObject::new(model, view, proj)
+        CameraUniformBufferObject::new(view, proj)
+    }
+
+    pub fn handle_event(winit_event: winit::Event, camera_transform: &mut Transform) {
+        match winit_event {
+            winit::Event::WindowEvent { event, .. } => {
+                match event {
+                    // FORWARD
+                    winit::WindowEvent::KeyboardInput {
+                        input: winit::KeyboardInput {
+                            virtual_keycode: Some(
+                                winit::VirtualKeyCode::W
+                            ),
+                            ..
+                        },
+                        ..
+                    } => {
+                        let forward = camera_transform.forward();
+                        camera_transform.translate(forward * -1.0)
+                    },
+                    
+                    // BACKWARD
+                    winit::WindowEvent::KeyboardInput {
+                        input: winit::KeyboardInput {
+                            virtual_keycode: Some(
+                                winit::VirtualKeyCode::S
+                            ),
+                            ..
+                        },
+                        ..
+                    } => {
+                        let forward = camera_transform.forward();
+                        camera_transform.translate(forward)
+                    }
+
+                    // LEFT
+                    winit::WindowEvent::KeyboardInput {
+                        input: winit::KeyboardInput {
+                            virtual_keycode: Some(
+                                winit::VirtualKeyCode::A
+                            ),
+                            ..
+                        },
+                        ..
+                    } => camera_transform.translate(Vector3::unit_x() * -1.0),
+
+                    // RIGHT
+                    winit::WindowEvent::KeyboardInput {
+                        input: winit::KeyboardInput {
+                            virtual_keycode: Some(
+                                winit::VirtualKeyCode::D
+                            ),
+                            ..
+                        },
+                        ..
+                    } => camera_transform.translate(Vector3::unit_x()),
+
+                    // UP
+                    winit::WindowEvent::KeyboardInput {
+                        input: winit::KeyboardInput {
+                            virtual_keycode: Some(
+                                winit::VirtualKeyCode::Space
+                            ),
+                            ..
+                        },
+                        ..
+                    } => camera_transform.translate(Vector3::unit_y()),
+
+                    // DOWN
+                    winit::WindowEvent::KeyboardInput {
+                        input: winit::KeyboardInput {
+                            virtual_keycode: Some(
+                                winit::VirtualKeyCode::LShift
+                            ),
+                            ..
+                        },
+                        ..
+                    } => camera_transform.translate(Vector3::unit_y() * -1.0),
+
+
+                    winit::WindowEvent::KeyboardInput {
+                        input: winit::KeyboardInput {
+                            virtual_keycode: Some(winit::VirtualKeyCode::Escape),
+                            ..
+                        },
+                        ..
+                    }
+                    | winit::WindowEvent::CloseRequested => panic!("matthew's bad way of handling exit"),
+                    _ => (),
+   
+                }
+            },
+            winit::Event::DeviceEvent { event, .. } => {
+                match event {
+                    winit::DeviceEvent::MouseMotion { delta } => {
+                        let (mut x, mut y) = delta;
+
+                        x *= -0.1; 
+                        y *= -0.1; 
+
+                        camera_transform.rotate(x as f32, y as f32, 0.0);
+                    }
+                    _ => (),
+                }
+            }
+            _ => (),
+        };
+    }
+
+    unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> Vec<u8> {
+        std::slice::from_raw_parts(
+            (p as *const T) as *const u8,
+            std::mem::size_of::<T>(),
+        )
+        .to_vec()
+    }
+
+    // TODO -> change this to just map_uniform_data and pass in the uniform we're targeting
+    pub unsafe fn map_object_uniform_data(&mut self, uniform_data: Vec<ObjectUniformBufferObject>) {
+        let device_writable = &mut self.device_state.write().unwrap().device;
+
+        // TODO -> Pass in the uniform that we need
+        let uniform_buffer = self
+            .object_uniform
+            .buffer
+            .as_ref()
+            .unwrap();
+
+        let uniform_memory = uniform_buffer
+            .buffer_memory
+            .as_ref()
+            .unwrap();
+
+        match device_writable.map_memory(uniform_memory, 0..uniform_buffer.size) {
+            Ok(mem_ptr) => {
+                // if !coherent {
+                //     device.invalidate_mapped_memory_ranges(
+                //         Some((
+                //            buffer.memory(),
+                //            range.clone()
+                //         ))
+                //     );
+                // }
+
+                let data_as_bytes = uniform_data
+                    .iter()
+                    .flat_map(|ubo| Self::any_as_u8_slice(ubo))
+                    .collect::<Vec<u8>>();
+
+                let slice = std::slice::from_raw_parts_mut(mem_ptr, data_as_bytes.len());
+                
+                println!("\n\n\n");
+                println!("slice len: {:?}", slice.len()); 
+                println!("data_as_bytes len: {:?}", data_as_bytes.len()); 
+                println!("\n\n\n");
+
+                slice.copy_from_slice(&data_as_bytes[..]);
+                
+                // if !coherent {
+                //     device.flush_mapped_memory_ranges(
+                //         Some((
+                //             buffer.memory(),
+                //             range
+                //         ))
+                //     );
+                // }
+            },
+            Err(e) => panic!("error mapping memory: {:?}", e),
+        }
+    }
+
+    pub unsafe fn generate_vertex_and_index_buffers(&mut self, meshes: Vec<Mesh>) {
+        let vertices = meshes
+            .iter()
+            .flat_map(|m| {
+                m.vertices.iter().map(|v| *v)
+            })
+            .collect::<Vec<Vertex>>();
+
+        let mut current_index = 0;
+        let indices = meshes
+            .iter()
+            .flat_map(|m| {
+                let indices = m.indices
+                    .iter()
+                    .map(move |val| current_index + val);
+
+                current_index += m.vertices.len() as u32;
+
+                return indices;
+            })
+            .collect::<Vec<u32>>();
+
+        println!("vertices: {:?}", vertices);
+        println!("vertices len: {:?}", vertices.len());
+        println!("indices: {:?}", indices);
+
+        let vertex_buffer_state = BufferState::new(
+            &self.device_state,
+            &vertices,
+            hal::buffer::Usage::VERTEX,
+            &self.backend_state.adapter_state.memory_types,
+        );
+       
+        let index_buffer_state = BufferState::new(
+            &self.device_state,
+            &indices,
+            hal::buffer::Usage::INDEX,
+            &self.backend_state.adapter_state.memory_types,
+        );
+
+        self.vertex_buffer_state = Some(vertex_buffer_state);
+        self.index_buffer_state = Some(index_buffer_state);
+
+        self.generate_cmd_buffers(meshes);
+    }
+
+    pub unsafe fn generate_cmd_buffers(&mut self, meshes: Vec<Mesh>) {
+        let framebuffers = self.framebuffer_state
+            .framebuffers
+            .as_ref()
+            .unwrap();
+
+        let command_pools = self.framebuffer_state
+            .command_pools
+            .as_mut()
+            .unwrap();
+
+        let num_buffers = framebuffers.len();
+
+        // TODO -> assert all sizes are same and all options are "Some"
+
+        let mut command_buffers: Vec<hal::command::CommandBuffer<B, hal::Graphics, hal::command::MultiShot>> = Vec::new();
+
+        for current_buffer_index in 0..num_buffers {
+            let framebuffer = &framebuffers[current_buffer_index];
+            let command_pool = &mut command_pools[current_buffer_index];
+            
+            // Rendering
+            let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::MultiShot>();
+            cmd_buffer.begin(false);
+
+            cmd_buffer.set_viewports(0, &[self.viewport.clone()]);
+            cmd_buffer.set_scissors(0, &[self.viewport.rect]);
+            cmd_buffer.bind_graphics_pipeline(&self.pipeline_state.pipeline.as_ref().unwrap());
+
+            cmd_buffer.bind_vertex_buffers(0, Some((self.vertex_buffer_state.as_ref().unwrap().get_buffer(), 0)));
+            cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView {
+                buffer: self.index_buffer_state.as_ref().unwrap().get_buffer(),
+                offset: 0,
+                index_type: hal::IndexType::U32
+            });
+
+
+            {
+                let mut encoder = cmd_buffer.begin_render_pass_inline(
+                    self.render_pass_state.render_pass.as_ref().unwrap(),
+                    &framebuffer,
+                    self.viewport.rect,
+                    &[
+                        hal::command::ClearValue::Color(hal::command::ClearColor::Float([0.6, 0.2, 0.0, 1.0])),
+                        hal::command::ClearValue::DepthStencil(hal::command::ClearDepthStencil(1.0, 0))
+                    ],
+                );
+                
+                let mut current_mesh_index = 0;
+                let dynamic_stride = std::mem::size_of::<ObjectUniformBufferObject>() as u32;
+
+                for (i, mesh) in meshes.iter().enumerate() {
+                    let dynamic_offset = i as u32 * dynamic_stride; 
+
+                    println!("dynamic_offset: {:?}", dynamic_offset);
+
+                    encoder.bind_graphics_descriptor_sets(
+                        &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
+                        0,
+                        vec![
+                            &self.image_state.desc_set.descriptor_set,
+                            &self.camera_uniform.desc.as_ref().unwrap().descriptor_set,
+                            &self.object_uniform.desc.as_ref().unwrap().descriptor_set
+                        ],
+                        &[dynamic_offset],
+                    );
+
+                    // let index_size = self.index_buffer_state.as_ref().unwrap().size as u32;
+
+
+                    let num_indices = mesh.indices.len() as u32;
+                    
+                    println!("bound desc sets and now drawing from index {:?} to {:?}", current_mesh_index, current_mesh_index + num_indices);
+                    
+                    encoder.draw_indexed(current_mesh_index..(current_mesh_index + num_indices), 0, 0..1);
+
+                    current_mesh_index += num_indices;
+                }
+            }
+            cmd_buffer.finish();
+
+            command_buffers.push(cmd_buffer);
+        }
+
+        self.framebuffer_state.command_buffers = Some(command_buffers);
     }
 
     pub unsafe fn draw_frame(&mut self, events_loop: &mut Arc<RwLock<EventHandler>>, time: &Arc<RwLock<Time>>) {
         let mut camera_transform = self.camera_transform.take().unwrap();
 
-        self.window_state.events_loop.poll_events(|winit_event| {
-            match winit_event {
-                winit::Event::WindowEvent { event, .. } => {
-                    match event {
-                        // FORWARD
-                        winit::WindowEvent::KeyboardInput {
-                            input: winit::KeyboardInput {
-                                virtual_keycode: Some(
-                                    winit::VirtualKeyCode::W
-                                ),
-                                ..
-                            },
-                            ..
-                        } => {
-                            let forward = camera_transform.forward();
-                            camera_transform.translate(forward * -1.0)
-                        },
-                        
-                        // BACKWARD
-                        winit::WindowEvent::KeyboardInput {
-                            input: winit::KeyboardInput {
-                                virtual_keycode: Some(
-                                    winit::VirtualKeyCode::S
-                                ),
-                                ..
-                            },
-                            ..
-                        } => {
-                            let forward = camera_transform.forward();
-                            camera_transform.translate(forward)
-                        }
-
-                        // LEFT
-                        winit::WindowEvent::KeyboardInput {
-                            input: winit::KeyboardInput {
-                                virtual_keycode: Some(
-                                    winit::VirtualKeyCode::A
-                                ),
-                                ..
-                            },
-                            ..
-                        } => camera_transform.translate(Vector3::unit_x() * -1.0),
-
-                        // RIGHT
-                        winit::WindowEvent::KeyboardInput {
-                            input: winit::KeyboardInput {
-                                virtual_keycode: Some(
-                                    winit::VirtualKeyCode::D
-                                ),
-                                ..
-                            },
-                            ..
-                        } => camera_transform.translate(Vector3::unit_x()),
-
-                        // UP
-                        winit::WindowEvent::KeyboardInput {
-                            input: winit::KeyboardInput {
-                                virtual_keycode: Some(
-                                    winit::VirtualKeyCode::Space
-                                ),
-                                ..
-                            },
-                            ..
-                        } => camera_transform.translate(Vector3::unit_y()),
-
-                        // DOWN
-                        winit::WindowEvent::KeyboardInput {
-                            input: winit::KeyboardInput {
-                                virtual_keycode: Some(
-                                    winit::VirtualKeyCode::LShift
-                                ),
-                                ..
-                            },
-                            ..
-                        } => camera_transform.translate(Vector3::unit_y() * -1.0),
-
-
-                        winit::WindowEvent::KeyboardInput {
-                            input: winit::KeyboardInput {
-                                virtual_keycode: Some(winit::VirtualKeyCode::Escape),
-                                ..
-                            },
-                            ..
-                        }
-                        | winit::WindowEvent::CloseRequested => panic!("matthew's bad way of handling exit"),
-                        _ => (),
-   
-                    }
-                },
-                winit::Event::DeviceEvent { event, .. } => {
-                    match event {
-                        winit::DeviceEvent::MouseMotion { delta } => {
-                            let (mut x, mut y) = delta;
-
-                            x *= -0.1; 
-                            y *= -0.1; 
-
-                            camera_transform.rotate(x as f32, y as f32, 0.0);
-                        }
-                        _ => (),
-                    }
-                }
-                _ => (),
-            };
-        });
+        self.window_state
+            .events_loop
+            .poll_events(|winit_event| Self::handle_event(winit_event, &mut camera_transform));
 
         self.camera_transform = Some(camera_transform);
-
-        // TODO -> figure out event handling
-        // events_loop.lock().unwrap().poll_events(|event| { if let winit::Event::WindowEvent { event, .. } = event {
-        //         match event {
-        //             winit::WindowEvent::KeyboardInput {
-        //                 input:
-        //                     winit::KeyboardInput {
-        //                         virtual_keycode: Some(winit::VirtualKeyCode::Escape),
-        //                         ..
-        //                     },
-        //                 ..
-        //             }
-        //                 | winit::WindowEvent::CloseRequested => panic!("matthew's bad way of handling exit"),
-        //             winit::WindowEvent::Resized(dims) => {
-        //                 println!("resized to: {:?}", dims);
-
-        //                 #[cfg(feature = "gl")]
-        //                 self.surface
-        //                     .get_window()
-        //                     .resize(dims.to_physical(self.surface.get_window().get_hidpi_factor()));
-
-        //                 self.recreate_swapchain = true;
-        //                 self.resize_dims.width = dims.width as u32;
-        //                 self.resize_dims.height = dims.height as u32;
-        //             }
-        //             _ => (),
-        //         }
-        //     }
-        // });
 
         if self.recreate_swapchain {
             self.recreate_swapchain();
@@ -1521,11 +1680,9 @@ impl<B: hal::Backend> Renderer<B> {
         }
 
         let dims = [DIMS.width as f32, DIMS.height as f32];
-        let delta_time = time.read().unwrap().delta_time;
-        let rot_amount = delta_time as f32 * 0.05;
-        self.model_transform.rotate(0.0, rot_amount, 0.0);
-        let new_ubo = self.update_uniform_buffer_object(dims, &self.model_transform, self.camera_transform.as_ref().unwrap());
-        self.uniform.buffer.as_mut().unwrap().update_data(0, &[new_ubo]);
+        
+        let new_ubo = self.update_camera_uniform_buffer_object(dims, self.camera_transform.as_ref().unwrap());
+        self.camera_uniform.buffer.as_mut().unwrap().update_data(0, &[new_ubo]);
 
         let sem_index = self.framebuffer_state.next_acq_pre_pair_index();
 
@@ -1545,7 +1702,7 @@ impl<B: hal::Backend> Renderer<B> {
             {
                 Ok((i, _)) => i,
                 Err(e) => {
-					println!("we gots an error on AQUIREIMAGE: {:?}", e);
+					error!("we gots an error on AQUIREIMAGE: {:?}", e);
                     self.recreate_swapchain = true;
                     return;
                 }
@@ -1555,8 +1712,8 @@ impl<B: hal::Backend> Renderer<B> {
         let (fid, sid) = self.framebuffer_state
             .get_frame_data(Some(frame as usize), Some(sem_index));
 
-        let (framebuffer_fence, framebuffer, command_pool) = fid.unwrap();
-        let (image_acquired, image_present) = sid.unwrap();
+        let (framebuffer_fence, command_buffer) = fid.unwrap();
+        let (image_acquired_semaphore, image_present_semaphore) = sid.unwrap();
 
         self.device_state
             .read()
@@ -1572,49 +1729,10 @@ impl<B: hal::Backend> Renderer<B> {
             .reset_fence(framebuffer_fence)
             .unwrap();
 
-        command_pool.reset();
-
-        // Rendering
-        let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::OneShot>();
-        cmd_buffer.begin();
-
-        cmd_buffer.set_viewports(0, &[self.viewport.clone()]);
-        cmd_buffer.set_scissors(0, &[self.viewport.rect]);
-        cmd_buffer.bind_graphics_pipeline(&self.pipeline_state.pipeline.as_ref().unwrap());
-        cmd_buffer.bind_vertex_buffers(0, Some((self.vertex_buffer_state.get_buffer(), 0)));
-        cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView {
-            buffer: self.index_buffer_state.get_buffer(),
-            offset: 0,
-            index_type: hal::IndexType::U32
-        });
-        cmd_buffer.bind_graphics_descriptor_sets(
-            &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
-            0,
-            vec![
-                &self.image_state.desc_set.descriptor_set,
-                &self.uniform.desc.as_ref().unwrap().descriptor_set
-            ],
-            &[],
-        ); //TODO
-
-        {
-            let mut encoder = cmd_buffer.begin_render_pass_inline(
-                self.render_pass_state.render_pass.as_ref().unwrap(),
-                framebuffer,
-                self.viewport.rect,
-                &[
-                    hal::command::ClearValue::Color(hal::command::ClearColor::Float([0.6, 0.2, 0.0, 1.0])),
-                    hal::command::ClearValue::DepthStencil(hal::command::ClearDepthStencil(1.0, 0))
-                ],
-            );
-            encoder.draw_indexed(0..(self.index_buffer_state.size as u32), 0, 0..1);
-        }
-        cmd_buffer.finish();
-
         let submission = Submission {
-            command_buffers: std::iter::once(&cmd_buffer),
-            wait_semaphores: std::iter::once((&*image_acquired, PipelineStage::BOTTOM_OF_PIPE)),
-            signal_semaphores: std::iter::once(&*image_present),
+            command_buffers: std::iter::once(&*command_buffer),
+            wait_semaphores: std::iter::once((&*image_acquired_semaphore, PipelineStage::BOTTOM_OF_PIPE)),
+            signal_semaphores: std::iter::once(&*image_present_semaphore),
         };
 
         self.device_state
@@ -1624,7 +1742,7 @@ impl<B: hal::Backend> Renderer<B> {
             .submit(submission, Some(framebuffer_fence));
 
         // present frame
-        if let Err(e) = self
+        if let Err(_e) = self
             .swapchain_state
             .swapchain
             .as_mut()
@@ -1632,7 +1750,7 @@ impl<B: hal::Backend> Renderer<B> {
             .present(
                 &mut self.device_state.write().unwrap().queue_group.queues[0],
                 frame,
-                Some(&*image_present),
+                Some(&*image_present_semaphore),
             )
         {
             self.recreate_swapchain = true;
@@ -1666,7 +1784,11 @@ impl<B: hal::Backend> Renderer<B> {
         self.pipeline_state = PipelineState::new(
             &self.device_state,
             self.render_pass_state.render_pass.as_ref().unwrap(),
-            vec![self.image_state.get_layout()],
+            vec![
+                self.image_state.get_layout(),
+                self.camera_uniform.get_layout(),
+                self.object_uniform.get_layout()
+            ],
         );
 
         self.viewport = Self::create_viewport(&self.swapchain_state);

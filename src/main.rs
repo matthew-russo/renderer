@@ -120,6 +120,29 @@ fn main() {
             .build();
     }
 
+    let renderables_is_diff = false;
+    
+    unsafe {
+        use cgmath::SquareMatrix;
+        
+        let (mut mesh_transform_one, mesh_one) = crate::primitives::three_d::cube::Cube::new();
+        let (mut mesh_transform_two, mesh_two) = crate::primitives::three_d::cube::Cube::new();
+        let (mut mesh_transform_three, mesh_three) = crate::primitives::three_d::cube::Cube::new();
+
+        mesh_transform_one.translate(Vector3::new(0.0, 5.0, 0.0));
+        mesh_transform_two.translate(Vector3::new(5.0, 0.0, 0.0));
+        mesh_transform_three.translate(Vector3::new(-5.0, 0.0, 0.0));
+
+        let models = vec![mesh_one, mesh_two, mesh_three];
+  
+        renderer.map_object_uniform_data(vec![
+            mesh_transform_one.to_ubo(),
+            mesh_transform_two.to_ubo(),
+            mesh_transform_three.to_ubo()
+        ]);
+        
+        renderer.generate_vertex_and_index_buffers(models);
+    }
     
     loop {
         // pull in events from windowing system
@@ -147,6 +170,10 @@ fn main() {
         //     .join()
         //     .map(|(transform, mesh)| (mesh.key.clone(), transform.clone()))
         //     .collect();
+
+        // if renderables_is_diff {
+        //     unsafe { renderer.generate_cmd_buffers(1); }
+        // }
 
         // renderer.create_command_buffers(transform, renderables);
         unsafe { renderer.draw_frame(&mut event_handler, &time) };

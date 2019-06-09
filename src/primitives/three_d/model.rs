@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::primitives::vertex::Vertex;
 use crate::components::transform::Transform;
 
+// TODO -> need to reconcile Mesh && Model
 #[derive(Clone)]
 pub struct Model {
     pub id: String,
