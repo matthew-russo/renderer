@@ -83,6 +83,3 @@ impl Cube {
     }
 }
 
-//impl Model for Cube {
-//
-//}

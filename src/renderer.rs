@@ -37,13 +37,12 @@ use cgmath::{
 use crate::timing::Time;
 use crate::primitives::vertex::Vertex;
 
-// TODO -> need to reconcile Mesh && Model
 use crate::components::mesh::Mesh;
-use crate::primitives::three_d::model::Model;
 use crate::primitives::uniform_buffer_object::{
     CameraUniformBufferObject,
     ObjectUniformBufferObject
 };
+use crate::primitives::drawable::Drawable;
 use crate::events::event_handler::EventHandler;
 use crate::components::transform::Transform;
 
@@ -278,8 +277,6 @@ impl<B: hal::Backend> BufferState<B> {
 
         let stride = std::mem::size_of::<T>() as u64;
         let upload_size = data_source.len() as u64 * stride;
-
-        println!("UPLOAD SIZE: {:?}", upload_size);
 
         {
             let device = &device_state.read().unwrap().device;
@@ -553,7 +550,6 @@ impl<B: hal::Backend> SwapchainState<B> {
             .surface
             .compatibility(&device_state.read().unwrap().physical_device);
         
-        println!("formats: {:?}", formats);
         let format = formats.map_or(Format::Rgba8Srgb, |formats| {
             formats
                 .iter()
@@ -563,7 +559,6 @@ impl<B: hal::Backend> SwapchainState<B> {
         });
 
         let swap_config = SwapchainConfig::from_caps(&caps, format, DIMS);
-        println!("swap_config: {:?}", swap_config);
         let extent = swap_config.extent.to_extent();
 
         let (swapchain, backbuffer) = unsafe { 
@@ -1364,7 +1359,7 @@ impl<B: hal::Backend> Renderer<B> {
         CameraUniformBufferObject::new(view, proj)
     }
 
-    pub fn handle_event(winit_event: winit::Event, camera_transform: &mut Transform) {
+    pub fn handle_event(winit_event: winit::Event, camera_transform: &mut Transform, time: &Time) {
         match winit_event {
             winit::Event::WindowEvent { event, .. } => {
                 match event {
@@ -1379,7 +1374,7 @@ impl<B: hal::Backend> Renderer<B> {
                         ..
                     } => {
                         let forward = camera_transform.forward();
-                        camera_transform.translate(forward * -1.0)
+                        camera_transform.translate(forward * -1.0 * time.delta_time as f32 * 0.01)
                     },
                     
                     // BACKWARD
@@ -1393,7 +1388,7 @@ impl<B: hal::Backend> Renderer<B> {
                         ..
                     } => {
                         let forward = camera_transform.forward();
-                        camera_transform.translate(forward)
+                        camera_transform.translate(forward * time.delta_time as f32 * 0.01)
                     }
 
                     // LEFT
@@ -1405,7 +1400,10 @@ impl<B: hal::Backend> Renderer<B> {
                             ..
                         },
                         ..
-                    } => camera_transform.translate(Vector3::unit_x() * -1.0),
+                    } => {
+                        let left = camera_transform.left();
+                        camera_transform.translate(left * time.delta_time as f32 * 0.01)
+                    },
 
                     // RIGHT
                     winit::WindowEvent::KeyboardInput {
@@ -1416,7 +1414,10 @@ impl<B: hal::Backend> Renderer<B> {
                             ..
                         },
                         ..
-                    } => camera_transform.translate(Vector3::unit_x()),
+                    } => {
+                        let right = camera_transform.right();
+                        camera_transform.translate(right * time.delta_time as f32 * 0.01)
+                    },
 
                     // UP
                     winit::WindowEvent::KeyboardInput {
@@ -1427,7 +1428,7 @@ impl<B: hal::Backend> Renderer<B> {
                             ..
                         },
                         ..
-                    } => camera_transform.translate(Vector3::unit_y()),
+                    } => camera_transform.translate(Vector3::unit_y() * time.delta_time as f32 * 0.01),
 
                     // DOWN
                     winit::WindowEvent::KeyboardInput {
@@ -1438,7 +1439,7 @@ impl<B: hal::Backend> Renderer<B> {
                             ..
                         },
                         ..
-                    } => camera_transform.translate(Vector3::unit_y() * -1.0),
+                    } => camera_transform.translate(Vector3::unit_y() * -1.0 * time.delta_time as f32 * 0.01),
 
 
                     winit::WindowEvent::KeyboardInput {
@@ -1512,11 +1513,6 @@ impl<B: hal::Backend> Renderer<B> {
 
                 let slice = std::slice::from_raw_parts_mut(mem_ptr, data_as_bytes.len());
                 
-                println!("\n\n\n");
-                println!("slice len: {:?}", slice.len()); 
-                println!("data_as_bytes len: {:?}", data_as_bytes.len()); 
-                println!("\n\n\n");
-
                 slice.copy_from_slice(&data_as_bytes[..]);
                 
                 // if !coherent {
@@ -1532,7 +1528,7 @@ impl<B: hal::Backend> Renderer<B> {
         }
     }
 
-    pub unsafe fn generate_vertex_and_index_buffers(&mut self, meshes: Vec<Mesh>) {
+    unsafe fn generate_vertex_and_index_buffers(&mut self, meshes: Vec<Mesh>) {
         let vertices = meshes
             .iter()
             .flat_map(|m| {
@@ -1554,10 +1550,6 @@ impl<B: hal::Backend> Renderer<B> {
             })
             .collect::<Vec<u32>>();
 
-        println!("vertices: {:?}", vertices);
-        println!("vertices len: {:?}", vertices.len());
-        println!("indices: {:?}", indices);
-
         let vertex_buffer_state = BufferState::new(
             &self.device_state,
             &vertices,
@@ -1578,7 +1570,7 @@ impl<B: hal::Backend> Renderer<B> {
         self.generate_cmd_buffers(meshes);
     }
 
-    pub unsafe fn generate_cmd_buffers(&mut self, meshes: Vec<Mesh>) {
+    unsafe fn generate_cmd_buffers(&mut self, meshes: Vec<Mesh>) {
         let framebuffers = self.framebuffer_state
             .framebuffers
             .as_ref()
@@ -1614,14 +1606,13 @@ impl<B: hal::Backend> Renderer<B> {
                 index_type: hal::IndexType::U32
             });
 
-
             {
                 let mut encoder = cmd_buffer.begin_render_pass_inline(
                     self.render_pass_state.render_pass.as_ref().unwrap(),
                     &framebuffer,
                     self.viewport.rect,
                     &[
-                        hal::command::ClearValue::Color(hal::command::ClearColor::Float([0.6, 0.2, 0.0, 1.0])),
+                        hal::command::ClearValue::Color(hal::command::ClearColor::Float([0.0, 0.0, 0.0, 1.0])),
                         hal::command::ClearValue::DepthStencil(hal::command::ClearDepthStencil(1.0, 0))
                     ],
                 );
@@ -1631,8 +1622,6 @@ impl<B: hal::Backend> Renderer<B> {
 
                 for (i, mesh) in meshes.iter().enumerate() {
                     let dynamic_offset = i as u32 * dynamic_stride; 
-
-                    println!("dynamic_offset: {:?}", dynamic_offset);
 
                     encoder.bind_graphics_descriptor_sets(
                         &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
@@ -1644,16 +1633,9 @@ impl<B: hal::Backend> Renderer<B> {
                         ],
                         &[dynamic_offset],
                     );
-
-                    // let index_size = self.index_buffer_state.as_ref().unwrap().size as u32;
-
-
+                    
                     let num_indices = mesh.indices.len() as u32;
-                    
-                    println!("bound desc sets and now drawing from index {:?} to {:?}", current_mesh_index, current_mesh_index + num_indices);
-                    
                     encoder.draw_indexed(current_mesh_index..(current_mesh_index + num_indices), 0, 0..1);
-
                     current_mesh_index += num_indices;
                 }
             }
@@ -1665,12 +1647,30 @@ impl<B: hal::Backend> Renderer<B> {
         self.framebuffer_state.command_buffers = Some(command_buffers);
     }
 
+    pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>) {
+        self.map_object_uniform_data(
+            drawables
+                .iter_mut()
+                .map(|d| d.transform.take().unwrap().to_ubo())
+                .collect::<Vec<ObjectUniformBufferObject>>()
+        );
+
+        self.generate_vertex_and_index_buffers(
+            drawables
+                .iter_mut()
+                .map(|d| d.mesh.take().unwrap())
+                .collect::<Vec<Mesh>>()
+        );
+    }
+
     pub unsafe fn draw_frame(&mut self, events_loop: &mut Arc<RwLock<EventHandler>>, time: &Arc<RwLock<Time>>) {
         let mut camera_transform = self.camera_transform.take().unwrap();
 
+        let time_readable = time.read().unwrap();
+
         self.window_state
             .events_loop
-            .poll_events(|winit_event| Self::handle_event(winit_event, &mut camera_transform));
+            .poll_events(|winit_event| Self::handle_event(winit_event, &mut camera_transform, &time_readable));
 
         self.camera_transform = Some(camera_transform);
 

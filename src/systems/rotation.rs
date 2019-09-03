@@ -10,6 +10,8 @@ use specs::{
     Join,
 };
 
+use rand::Rng;
+
 use crate::components::mesh::Mesh;
 use crate::components::transform::Transform;
 use crate::timing::Time;
@@ -25,11 +27,14 @@ impl<'a> System<'a> for Rotation {
     );
 
     fn run(&mut self, (mut transform_storage, mesh_storage): Self::SystemData) {
-        //let total_time = self.time.read().unwrap().total_time() as f32 * 0.0001;
+        let mut rng = rand::thread_rng();
+        
         let delta_time = self.time.read().unwrap().delta_time as f32 * 0.01;
 
         for (transform, mesh) in (&mut transform_storage, &mesh_storage).join() {
-            transform.rotate(2.0 * delta_time, 10.0 * delta_time, 20.0 * delta_time);
+            let r = rng.gen::<f32>();
+            let unique_delta = r * delta_time * 2.0;
+            transform.rotate(2.0 * unique_delta, 10.0 * unique_delta, 20.0 * unique_delta);
         }
     }
 }

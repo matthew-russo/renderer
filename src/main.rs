@@ -30,7 +30,12 @@ extern crate gfx_backend_gl as back;
 extern crate gfx_backend_metal as back;
 #[cfg(feature = "vulkan")]
 extern crate gfx_backend_vulkan as back;
+
 extern crate gfx_hal as hal;
+
+use std::alloc::System;
+#[global_allocator]
+static ALLOCATOR: System = System;
 
 extern crate glsl_to_spirv;
 
@@ -73,6 +78,7 @@ use crate::renderer::{WindowState, Renderer, create_backend};
 use crate::components::mesh::Mesh;
 use crate::components::transform::Transform;
 use crate::primitives::three_d::cube::Cube;
+use crate::primitives::drawable::Drawable;
 use crate::components::camera::Camera;
 use crate::timing::Time;
 use crate::systems::rotation::Rotation;
@@ -106,7 +112,7 @@ fn main() {
         .build();
 
     let mut rng = rand::thread_rng();
-    for _i in 0..512 {
+    for _i in 0..64 {
         let (mut transform, mesh) = Cube::new();
         let x = rng.gen_range(-15.0, 15.0);
         let y = rng.gen_range(-15.0, 15.0);
@@ -123,25 +129,18 @@ fn main() {
     let renderables_is_diff = false;
     
     unsafe {
-        use cgmath::SquareMatrix;
+        world.maintain();
         
-        let (mut mesh_transform_one, mesh_one) = crate::primitives::three_d::cube::Cube::new();
-        let (mut mesh_transform_two, mesh_two) = crate::primitives::three_d::cube::Cube::new();
-        let (mut mesh_transform_three, mesh_three) = crate::primitives::three_d::cube::Cube::new();
+        let transform_storage = world.read_storage::<Transform>();
+        let mesh_storage = world.read_storage::<Mesh>();
+       
+        // TODO -> get rid of clones? probably expensive? need to profile
+        let drawables = (&transform_storage, &mesh_storage)
+            .join()
+            .map(|(transform, mesh)| Drawable::new(mesh.clone(), transform.clone()))
+            .collect();
 
-        mesh_transform_one.translate(Vector3::new(0.0, 5.0, 0.0));
-        mesh_transform_two.translate(Vector3::new(5.0, 0.0, 0.0));
-        mesh_transform_three.translate(Vector3::new(-5.0, 0.0, 0.0));
-
-        let models = vec![mesh_one, mesh_two, mesh_three];
-  
-        renderer.map_object_uniform_data(vec![
-            mesh_transform_one.to_ubo(),
-            mesh_transform_two.to_ubo(),
-            mesh_transform_three.to_ubo()
-        ]);
-        
-        renderer.generate_vertex_and_index_buffers(models);
+        renderer.update_drawables(drawables);
     }
     
     loop {
@@ -166,16 +165,18 @@ fn main() {
 
         let (camera, transform) = (&camera_storage, &transform_storage).join().nth(0).unwrap();
 
-        // let renderables = (&transform_storage, &mesh_storage)
-        //     .join()
-        //     .map(|(transform, mesh)| (mesh.key.clone(), transform.clone()))
-        //     .collect();
+        // TODO -> get rid of clones? probably expensive? need to profile
+        let uniform_data = (&transform_storage, &mesh_storage)
+            .join()
+            .map(|(transform, mesh)| transform.clone().to_ubo())
+            .collect();
+
+        unsafe { renderer.map_object_uniform_data(uniform_data) }
 
         // if renderables_is_diff {
         //     unsafe { renderer.generate_cmd_buffers(1); }
         // }
 
-        // renderer.create_command_buffers(transform, renderables);
         unsafe { renderer.draw_frame(&mut event_handler, &time) };
     }
 }

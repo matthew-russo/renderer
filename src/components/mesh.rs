@@ -2,7 +2,7 @@ use crate::primitives::vertex::Vertex;
 use specs::Component;
 use specs::VecStorage;
 
-// TODO -> Need to reconcile Mesh and Model
+#[derive(Clone)]
 pub struct Mesh {
     pub key: String,
     pub vertices: Vec<Vertex>,

@@ -16,6 +16,8 @@ use cgmath::{
 
 use crate::primitives::uniform_buffer_object::ObjectUniformBufferObject;
 
+const UP_VECTOR: Vector3<f32> = Vector3::new(0.0, 1.0, 0.0);
+
 #[derive(Clone, Debug)]
 pub struct Transform {
     pub position: Vector3<f32>,
@@ -60,6 +62,16 @@ impl Transform {
             rotation.y.tan() * -1.0,
             rotation.x.cos(),
         )
+    }
+
+    pub fn left(&self) -> Vector3<f32> {
+        let forward = self.forward();
+        forward.cross(UP_VECTOR)
+    }
+    
+    pub fn right(&self) -> Vector3<f32> {
+        let forward = self.forward();
+        forward.cross(UP_VECTOR) * -1.0
     }
 
     // TODO -> Turn this into From and Into impls!
