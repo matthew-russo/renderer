@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use winit::{
+use winit::event::{
     Event,
     WindowEvent,
     DeviceEvent,
@@ -28,7 +28,7 @@ use cgmath::Vector3;
 
 // This struct takes all incoming window events and converts them to application events to be passed down to widgets
 pub struct EventHandler {
-    window_events: Vec<Event>,
+    window_events: Vec<Event<()>>,
 
     // todo -> not make this pub
     pub application_events: Vec<ApplicationEvent>,
@@ -45,12 +45,12 @@ impl EventHandler {
         }
     }
 
-    fn widget_should_receive_event(event: ApplicationEvent, widget: Arc<Mutex<Widget>>) -> bool {
+    fn widget_should_receive_event(event: ApplicationEvent, widget: Arc<Mutex<dyn Widget>>) -> bool {
         // todo -> calculate if this widget should receive the event
         false
     }
 
-    fn transform_event(window_event: Event) -> Vec<ApplicationEvent> {
+    fn transform_event(window_event: Event<()>) -> Vec<ApplicationEvent> {
         return match window_event {
             Event::WindowEvent { event, .. } => {
                 match event {
@@ -71,9 +71,9 @@ impl EventHandler {
                     WindowEvent::MouseInput { state, button, modifiers, .. } => Self::handle_mouse_input(state, button, modifiers),
                     WindowEvent::TouchpadPressure { .. } => vec![],
                     WindowEvent::AxisMotion { .. } => vec![],
-                    WindowEvent::Refresh => vec![],
                     WindowEvent::Touch(_) => vec![],
                     WindowEvent::HiDpiFactorChanged(_) => vec![],
+                    WindowEvent::RedrawRequested => vec![]
                 }
             },
             Event::DeviceEvent { event, .. } => {
@@ -88,8 +88,12 @@ impl EventHandler {
                     DeviceEvent::Text { .. } => vec![],
                 }
             },
-            Event::Awakened => vec![],
-            Event::Suspended(_) => vec![],
+            Event::Suspended => vec![],
+            Event::UserEvent(_) => vec![],
+            Event::NewEvents(_) => vec![],
+            Event::EventsCleared => vec![],
+            Event::LoopDestroyed => vec![],
+            Event::Resumed => vec![]
         }
     }
 
@@ -101,7 +105,7 @@ impl EventHandler {
             .collect();
     }
 
-    pub fn queue_window_event(&mut self, window_event: Event) {
+    pub fn queue_window_event(&mut self, window_event: Event<()>) {
         self.window_events.push(window_event);
     }
 
@@ -130,7 +134,7 @@ impl EventHandler {
                 println!("escape key hit -> adding vertices");
 
                 // ui_layer.lock().unwrap().add_geometry(new_vertices, new_indices);
-                return if input.state == winit::ElementState::Released {
+                return if input.state == winit::event::ElementState::Released {
                     match key_press {
                         Some(k) => vec![ApplicationEvent::KeyPress(k)],
                         None => vec![]
@@ -205,3 +209,123 @@ impl EventHandler {
         vec![]
     }
 }
+
+//                              copied from renderer::draw_frame
+//
+// self.window_state
+//     .events_loop
+//     .run(|winit_event, _target, _controlFlow| Self::handle_event(winit_event, &mut camera_transform));
+//
+// pub fn handle_event(self, winit_event: winit::event::Event<UserEvent>, camera_transform: &mut Transform) {
+//     let time_readable = self.time.read().unwrap();
+//
+//     match winit_event {
+//         winit::event::Event::WindowEvent { event, .. } => {
+//             match event {
+//                 // FORWARD
+//                 winit::event::WindowEvent::KeyboardInput {
+//                     input: winit::event::KeyboardInput {
+//                         virtual_keycode: Some(
+//                             winit::event::VirtualKeyCode::W
+//                         ),
+//                         ..
+//                     },
+//                     ..
+//                 } => {
+//                     let forward = camera_transform.forward();
+//                     camera_transform.translate(forward * -1.0 * time_readable.delta_time as f32 * 0.01)
+//                 },
+//
+//                 // BACKWARD
+//                 winit::event::WindowEvent::KeyboardInput {
+//                     input: winit::event::KeyboardInput {
+//                         virtual_keycode: Some(
+//                             winit::event::VirtualKeyCode::S
+//                         ),
+//                         ..
+//                     },
+//                     ..
+//                 } => {
+//                     let forward = camera_transform.forward();
+//                     camera_transform.translate(forward * time_readable.delta_time as f32 * 0.01)
+//                 }
+//
+//                 // LEFT
+//                 winit::event::WindowEvent::KeyboardInput {
+//                     input: winit::event::KeyboardInput {
+//                         virtual_keycode: Some(
+//                             winit::event::VirtualKeyCode::A
+//                         ),
+//                         ..
+//                     },
+//                     ..
+//                 } => {
+//                     let left = camera_transform.left();
+//                     camera_transform.translate(left * time_readable.delta_time as f32 * 0.01)
+//                 },
+//
+//                 // RIGHT
+//                 winit::event::WindowEvent::KeyboardInput {
+//                     input: winit::event::KeyboardInput {
+//                         virtual_keycode: Some(
+//                             winit::event::VirtualKeyCode::D
+//                         ),
+//                         ..
+//                     },
+//                     ..
+//                 } => {
+//                     let right = camera_transform.right();
+//                     camera_transform.translate(right * time_readable.delta_time as f32 * 0.01)
+//                 },
+//
+//                 // UP
+//                 winit::event::WindowEvent::KeyboardInput {
+//                     input: winit::event::KeyboardInput {
+//                         virtual_keycode: Some(
+//                             winit::event::VirtualKeyCode::Space
+//                         ),
+//                         ..
+//                     },
+//                     ..
+//                 } => camera_transform.translate(Vector3::unit_y() * time_readable.delta_time as f32 * 0.01),
+//
+//                 // DOWN
+//                 winit::event::WindowEvent::KeyboardInput {
+//                     input: winit::event::KeyboardInput {
+//                         virtual_keycode: Some(
+//                             winit::event::VirtualKeyCode::LShift
+//                         ),
+//                         ..
+//                     },
+//                     ..
+//                 } => camera_transform.translate(Vector3::unit_y() * -1.0 * time_readable.delta_time as f32 * 0.01),
+//
+//
+//                 winit::event::WindowEvent::KeyboardInput {
+//                     input: winit::event::KeyboardInput {
+//                         virtual_keycode: Some(winit::event::VirtualKeyCode::Escape),
+//                         ..
+//                     },
+//                     ..
+//                 }
+//                 | winit::event::WindowEvent::CloseRequested => panic!("matthew's bad way of handling exit"),
+//                 _ => (),
+//
+//             }
+//         },
+//         winit::event::Event::DeviceEvent { event, .. } => {
+//             match event {
+//                 winit::event::DeviceEvent::MouseMotion { delta } => {
+//                     let (mut x, mut y) = delta;
+//
+//                     x *= -0.1;
+//                     y *= -0.1;
+//
+//                     camera_transform.rotate(x as f32, y as f32, 0.0);
+//                 }
+//                 _ => (),
+//             }
+//         }
+//         _ => (),
+//     };
+// }

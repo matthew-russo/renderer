@@ -1,6 +1,7 @@
 use std::fs;
 use std::sync::{Arc, RwLock};
 use std::io::{Cursor, Read};
+use std::collections::HashMap;
 
 use hal::format::{Format, AsFormat, ChannelType, Rgba8Srgb, Swizzle, Aspects};
 use hal::pass::Subpass;
@@ -27,14 +28,12 @@ use image::load as load_image;
 
 use cgmath::{
     Deg,
-    Point3,
     Vector3,
     Matrix4,
     SquareMatrix,
     perspective,
 };
 
-use crate::timing::Time;
 use crate::primitives::vertex::Vertex;
 
 use crate::components::mesh::Mesh;
@@ -43,8 +42,8 @@ use crate::primitives::uniform_buffer_object::{
     ObjectUniformBufferObject
 };
 use crate::primitives::drawable::Drawable;
-use crate::events::event_handler::EventHandler;
 use crate::components::transform::Transform;
+use crate::components::texture::Texture;
 
 const DIMS: Extent2D = Extent2D { width: 1024,height: 768 };
 
@@ -95,7 +94,7 @@ pub struct BackendState<B: hal::Backend> {
 
     #[cfg(any(feature = "vulkan", feature = "dx11", feature = "dx12", feature = "metal"))]
     #[allow(dead_code)]
-    window: winit::Window,
+    window: winit::window::Window,
 }
 
 #[cfg(not(any(feature="gl", feature="dx12", feature="vulkan", feature="metal")))]
@@ -130,11 +129,11 @@ pub fn create_backend(window_state: &mut WindowState) -> (BackendState<back::Bac
         .window_builder
         .take()
         .unwrap()
-        .build(&window_state.events_loop)
+        .build(&window_state.event_loop)
         .unwrap();
 
     let instance = back::Instance::create("matthew's spectacular rendering engine", 1);
-    let surface = instance.create_surface(&window);
+    let surface = instance.create_surface_from_raw(&window).unwrap();
     let mut adapters = instance.enumerate_adapters();
 
     let backend_state = BackendState {
@@ -146,24 +145,23 @@ pub fn create_backend(window_state: &mut WindowState) -> (BackendState<back::Bac
     (backend_state, instance)
 }
 
+// TODO -> move this out of the renderer so the window and events live outside the scope of renderer
 pub struct WindowState {
-    events_loop: winit::EventsLoop,
-    window_builder: Option<winit::WindowBuilder>,
+    event_loop: winit::event_loop::EventLoop<()>,
+    window_builder: Option<winit::window::WindowBuilder>,
 }
 
 impl WindowState {
     pub fn new() -> Self {
-        let events_loop = winit::EventsLoop::new();
-
-        let wb = winit::WindowBuilder::new()
-            .with_dimensions(winit::dpi::LogicalSize::new(
+        let wb = winit::window::WindowBuilder::new()
+            .with_inner_size(winit::dpi::LogicalSize::new(
                 DIMS.width as _,
                 DIMS.height as _
             ))
             .with_title("matthew's spectacular rendering engine");
 
         Self {
-            events_loop,
+            event_loop: winit::event_loop::EventLoop::new(),
             window_builder: Some(wb)
         }
     }
@@ -176,7 +174,7 @@ struct DeviceState<B: hal::Backend> {
 }
 
 impl<B: hal::Backend> DeviceState<B> {
-    fn new(adapter: Adapter<B>, surface: &Surface<B>) -> Self {
+    fn new(adapter: Adapter<B>, surface: &dyn Surface<B>) -> Self {
         let (device, queue_group) = adapter
             .open_with::<_, hal::Graphics>(1, |family| surface.supports_queue_family(family))
             .unwrap();
@@ -419,24 +417,24 @@ impl<B: hal::Backend> PipelineState<B> {
 
         let vs_module = {
             let glsl = fs::read_to_string("src/data/shaders/standard.vert").unwrap();
-            let spirv: Vec<u8> = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Vertex)
+            let spirv: Vec<u32> = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Vertex)
                 .unwrap()
                 .bytes()
-                .map(|b| b.unwrap())
+                .map(|b| b.unwrap() as u32)
                 .collect();
 
-            device.create_shader_module(&spirv).unwrap()
+            device.create_shader_module(&spirv[..]).unwrap()
         };
 
         let fs_module = {
             let glsl = fs::read_to_string("src/data/shaders/standard.frag").unwrap();
-            let spirv: Vec<u8> = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Fragment)
+            let spirv: Vec<u32> = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Fragment)
                 .unwrap()
                 .bytes()
-                .map(|b| b.unwrap())
+                .map(|b| b.unwrap() as u32)
                 .collect();
 
-            device.create_shader_module(&spirv).unwrap()
+            device.create_shader_module(&spirv[..]).unwrap()
         };
 
         let pipeline = {
@@ -474,10 +472,10 @@ impl<B: hal::Backend> PipelineState<B> {
                 subpass,
             );
 
-            pipeline_desc.blender.targets.push(hal::pso::ColorBlendDesc(
-                hal::pso::ColorMask::ALL,
-                hal::pso::BlendState::ALPHA,
-            ));
+            pipeline_desc.blender.targets.push(hal::pso::ColorBlendDesc {
+                mask: hal::pso::ColorMask::ALL,
+                blend: Some(hal::pso::BlendState::ALPHA),
+            });
 
             pipeline_desc.vertex_buffers.push(hal::pso::VertexBufferDesc {
                 binding: 0,
@@ -513,12 +511,12 @@ impl<B: hal::Backend> PipelineState<B> {
             });
            
             pipeline_desc.depth_stencil = hal::pso::DepthStencilDesc {
-                depth: hal::pso::DepthTest::On {
+                depth: Some(hal::pso::DepthTest {
                     fun: hal::pso::Comparison::Less,
                     write: true
-                },
+                }),
                 depth_bounds: false,
-                stencil: hal::pso::StencilTest::default()
+                stencil: Some(hal::pso::StencilTest::default())
             };
 
             device.create_graphics_pipeline(&pipeline_desc, None)
@@ -757,7 +755,7 @@ impl<B: hal::Backend> ImageState<B> {
         command_pool: &mut CommandPool<B, Graphics>
     ) -> Self {
         // TODO -> don't use hard coded image path. pass the image_data in
-        let img_data = include_bytes!("data/textures/chalet.jpg");
+        let img_data = include_bytes!("../data/textures/chalet.jpg");
         let img = load_image(Cursor::new(&img_data[..]), image::JPEG)
             .unwrap()
             .to_rgba();
@@ -928,7 +926,7 @@ impl<B: hal::Backend> ImageState<B> {
 
         cmd_buffer.finish();
 
-        device_state.write().unwrap().queue_group.queues[0].submit_nosemaphores(Some(&cmd_buffer), Some(&mut transferred_image_fence));
+        device_state.write().unwrap().queue_group.queues[0].submit_without_semaphores(Some(&cmd_buffer), Some(&mut transferred_image_fence));
 
         device_state.read().unwrap().device.destroy_buffer(image_upload_buffer);
         device_state.read().unwrap().device.free_memory(image_upload_memory);
@@ -1359,118 +1357,6 @@ impl<B: hal::Backend> Renderer<B> {
         CameraUniformBufferObject::new(view, proj)
     }
 
-    pub fn handle_event(winit_event: winit::Event, camera_transform: &mut Transform, time: &Time) {
-        match winit_event {
-            winit::Event::WindowEvent { event, .. } => {
-                match event {
-                    // FORWARD
-                    winit::WindowEvent::KeyboardInput {
-                        input: winit::KeyboardInput {
-                            virtual_keycode: Some(
-                                winit::VirtualKeyCode::W
-                            ),
-                            ..
-                        },
-                        ..
-                    } => {
-                        let forward = camera_transform.forward();
-                        camera_transform.translate(forward * -1.0 * time.delta_time as f32 * 0.01)
-                    },
-                    
-                    // BACKWARD
-                    winit::WindowEvent::KeyboardInput {
-                        input: winit::KeyboardInput {
-                            virtual_keycode: Some(
-                                winit::VirtualKeyCode::S
-                            ),
-                            ..
-                        },
-                        ..
-                    } => {
-                        let forward = camera_transform.forward();
-                        camera_transform.translate(forward * time.delta_time as f32 * 0.01)
-                    }
-
-                    // LEFT
-                    winit::WindowEvent::KeyboardInput {
-                        input: winit::KeyboardInput {
-                            virtual_keycode: Some(
-                                winit::VirtualKeyCode::A
-                            ),
-                            ..
-                        },
-                        ..
-                    } => {
-                        let left = camera_transform.left();
-                        camera_transform.translate(left * time.delta_time as f32 * 0.01)
-                    },
-
-                    // RIGHT
-                    winit::WindowEvent::KeyboardInput {
-                        input: winit::KeyboardInput {
-                            virtual_keycode: Some(
-                                winit::VirtualKeyCode::D
-                            ),
-                            ..
-                        },
-                        ..
-                    } => {
-                        let right = camera_transform.right();
-                        camera_transform.translate(right * time.delta_time as f32 * 0.01)
-                    },
-
-                    // UP
-                    winit::WindowEvent::KeyboardInput {
-                        input: winit::KeyboardInput {
-                            virtual_keycode: Some(
-                                winit::VirtualKeyCode::Space
-                            ),
-                            ..
-                        },
-                        ..
-                    } => camera_transform.translate(Vector3::unit_y() * time.delta_time as f32 * 0.01),
-
-                    // DOWN
-                    winit::WindowEvent::KeyboardInput {
-                        input: winit::KeyboardInput {
-                            virtual_keycode: Some(
-                                winit::VirtualKeyCode::LShift
-                            ),
-                            ..
-                        },
-                        ..
-                    } => camera_transform.translate(Vector3::unit_y() * -1.0 * time.delta_time as f32 * 0.01),
-
-
-                    winit::WindowEvent::KeyboardInput {
-                        input: winit::KeyboardInput {
-                            virtual_keycode: Some(winit::VirtualKeyCode::Escape),
-                            ..
-                        },
-                        ..
-                    }
-                    | winit::WindowEvent::CloseRequested => panic!("matthew's bad way of handling exit"),
-                    _ => (),
-   
-                }
-            },
-            winit::Event::DeviceEvent { event, .. } => {
-                match event {
-                    winit::DeviceEvent::MouseMotion { delta } => {
-                        let (mut x, mut y) = delta;
-
-                        x *= -0.1; 
-                        y *= -0.1; 
-
-                        camera_transform.rotate(x as f32, y as f32, 0.0);
-                    }
-                    _ => (),
-                }
-            }
-            _ => (),
-        };
-    }
-
     unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> Vec<u8> {
         std::slice::from_raw_parts(
             (p as *const T) as *const u8,
@@ -1612,7 +1498,7 @@ impl<B: hal::Backend> Renderer<B> {
                     &framebuffer,
                     self.viewport.rect,
                     &[
-                        hal::command::ClearValue::Color(hal::command::ClearColor::Float([0.0, 0.0, 0.0, 1.0])),
+                        hal::command::ClearValue::Color(hal::command::ClearColor::Sfloat([0.0, 0.0, 0.0, 1.0])),
                         hal::command::ClearValue::DepthStencil(hal::command::ClearDepthStencil(1.0, 0))
                     ],
                 );
@@ -1651,26 +1537,34 @@ impl<B: hal::Backend> Renderer<B> {
         self.map_object_uniform_data(
             drawables
                 .iter_mut()
-                .map(|d| d.transform.take().unwrap().to_ubo())
+                .map(|d| d.transform.to_ubo())
                 .collect::<Vec<ObjectUniformBufferObject>>()
         );
 
+        let unique_textures = get_unique_textures();
+        self.generate_images();
+
+        let meshes = get_meshes();
         self.generate_vertex_and_index_buffers(
             drawables
                 .iter_mut()
-                .map(|d| d.mesh.take().unwrap())
+                .map(|d| d.mesh)
                 .collect::<Vec<Mesh>>()
         );
+
+        let meshes_by_texture = drawables
+            .iter()
+            .fold(HashMap::<Texture, Vec<Mesh>>::new(), |mut map, drawable| {
+                let mut meshes_by_texture = map.entry(drawable.texture).or_insert(Vec::new());
+                meshes_by_texture.push(drawable.mesh);
+                meshes_by_texture
+            });
+
+        self.generate_cmd_buffers(meshes_by_texture)
     }
 
-    pub unsafe fn draw_frame(&mut self, events_loop: &mut Arc<RwLock<EventHandler>>, time: &Arc<RwLock<Time>>) {
+    pub unsafe fn draw_frame(&mut self) {
         let mut camera_transform = self.camera_transform.take().unwrap();
-
-        let time_readable = time.read().unwrap();
-
-        self.window_state
-            .events_loop
-            .poll_events(|winit_event| Self::handle_event(winit_event, &mut camera_transform, &time_readable));
 
         self.camera_transform = Some(camera_transform);
 
@@ -1858,7 +1752,13 @@ pub unsafe fn create_image_stuff<B: hal::Backend>(
 
 impl<B: hal::Backend> Drop for Renderer<B> {
     fn drop(&mut self) {
-        self.device_state.read().unwrap().device.wait_idle().unwrap();
+        self.device_state
+            .read()
+            .unwrap()
+            .device
+            .wait_idle()
+            .unwrap();
+
         unsafe {
             self.device_state
                 .read()

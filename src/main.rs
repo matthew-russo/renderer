@@ -47,7 +47,6 @@ extern crate uuid;
 
 #[macro_use]
 extern crate log;
-#[macro_use]
 extern crate env_logger;
 
 mod events;
@@ -73,10 +72,11 @@ use rand::Rng;
 
 use cgmath::Vector3;
 
-use crate::events::event_handler::EventHandler;
-use crate::renderer::{WindowState, Renderer, create_backend};
+use crate::renderer::renderer::{WindowState, Renderer, create_backend};
 use crate::components::mesh::Mesh;
 use crate::components::transform::Transform;
+use crate::components::texture::Texture;
+use crate::components::color::Color;
 use crate::primitives::three_d::cube::Cube;
 use crate::primitives::drawable::Drawable;
 use crate::components::camera::Camera;
@@ -86,13 +86,11 @@ use crate::systems::rotation::Rotation;
 fn main() {
     env_logger::init();
 
-    let mut time = Arc::new(RwLock::new(Time::new()));
+    let time = Arc::new(RwLock::new(Time::new()));
 
     let mut window_state = WindowState::new();
     let (mut backend_state, _instance) = create_backend(&mut window_state);
     let mut renderer = unsafe { Renderer::new(backend_state, window_state) };
-
-    let mut event_handler = Arc::new(RwLock::new(EventHandler::new()));
 
     let mut world = World::new();
     world.register::<Transform>();
@@ -126,32 +124,38 @@ fn main() {
             .build();
     }
 
-    let renderables_is_diff = false;
-    
     unsafe {
         world.maintain();
-        
+
+        let entities = world.entities();
         let transform_storage = world.read_storage::<Transform>();
         let mesh_storage = world.read_storage::<Mesh>();
-       
-        // TODO -> get rid of clones? probably expensive? need to profile
+
         let drawables = (&transform_storage, &mesh_storage)
             .join()
-            .map(|(transform, mesh)| Drawable::new(mesh.clone(), transform.clone()))
+            .map(|(ent, transform, mesh)| {
+                println!("Processing entity: {:?}", ent);
+
+                let mut drawable = Drawable::new(mesh.clone(), transform.clone());
+
+                match color_storage.get(ent) {
+                    Some(color) => drawable.with_color(color),
+                    _ => ()
+                }
+
+                match texture_storage.get(ent) {
+                    Some(texture) => drawable.with_texture(texture),
+                    _ => ()
+                }
+
+                drawable
+            })
             .collect();
 
         renderer.update_drawables(drawables);
     }
     
     loop {
-        // pull in events from windowing system
-        // renderer.events_loop.poll_events(|ev| {
-        //     event_handler.lock().unwrap().queue_window_event(ev);
-        // });
-
-        // event_handler.lock().unwrap().process_window_events();
-        // event_handler.lock().unwrap().handle_events(&world);
-
         // update the systems
         dispatcher.dispatch(&world.res);
         world.maintain();
@@ -163,20 +167,13 @@ fn main() {
         let transform_storage = world.read_storage::<Transform>();
         let mesh_storage = world.read_storage::<Mesh>();
 
-        let (camera, transform) = (&camera_storage, &transform_storage).join().nth(0).unwrap();
-
         // TODO -> get rid of clones? probably expensive? need to profile
         let uniform_data = (&transform_storage, &mesh_storage)
             .join()
-            .map(|(transform, mesh)| transform.clone().to_ubo())
+            .map(|(transform, _mesh)| transform.clone().to_ubo())
             .collect();
 
         unsafe { renderer.map_object_uniform_data(uniform_data) }
-
-        // if renderables_is_diff {
-        //     unsafe { renderer.generate_cmd_buffers(1); }
-        // }
-
-        unsafe { renderer.draw_frame(&mut event_handler, &time) };
+        unsafe { renderer.draw_frame() };
     }
 }

@@ -12,10 +12,10 @@ dx12 = ["gfx-backend-dx12"]
 vulkan = ["gfx-backend-vulkan"]
 
 [dependencies]
-glsl-to-spirv = "0.1.4"
-gfx-hal = "0.2.0"
-gfx-backend-empty = "0.2.0"
-winit = "0.19.1"
+glsl-to-spirv = "0.1.7"
+gfx-hal = "0.3.1"
+gfx-backend-empty = "0.3.0"
+winit = "0.20.0-alpha3"
 image = "0.21.1"
 tobj = "0.1.7"
 specs = "0.14.3"
@@ -26,20 +26,20 @@ log = "0.4.6"
 env_logger = "0.6.1"
 
 [dependencies.gfx-backend-gl]
-version = "0.2.0"
+version = "0.3.0"
 features = ["glutin"]
 optional = true
 
 [dependencies.gfx-backend-vulkan]
-version = "0.2.0"
+version = "0.3.3"
 optional = true
 
 [target.'cfg(any(target_os = "macos", all(target_os = "ios", target_arch = "aarch64")))'.dependencies.gfx-backend-metal]
-version = "0.2.0"
+version = "0.3.2"
 optional = true
 
 [target.'cfg(windows)'.dependencies.gfx-backend-dx12]
-version = "0.2.0"
+version = "0.3.2"
 optional = true
 
 [profile.release]
