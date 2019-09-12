@@ -45,7 +45,7 @@ impl EventHandler {
         }
     }
 
-    fn widget_should_receive_event(event: ApplicationEvent, widget: Arc<Mutex<dyn Widget>>) -> bool {
+    fn widget_should_receive_event(_event: ApplicationEvent, _widget: Arc<Mutex<dyn Widget>>) -> bool {
         // todo -> calculate if this widget should receive the event
         false
     }
@@ -153,32 +153,32 @@ impl EventHandler {
                 ApplicationEvent::KeyPress(key) => match key {
                     KeyPress::EscKey => {},
                     KeyPress::W => {
-                        for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                        for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
                             transform.translate(Vector3::new(0.0, 0.0, 1.0));
                         }
                     },
                     KeyPress::A => {
-                        for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                        for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
                             transform.translate(Vector3::new(-1.0, 0.0, 0.0));
                         }
                     },
                     KeyPress::S => {
-                        for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                        for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
                             transform.translate(Vector3::new(0.0, 0.0, -1.0));
                         }
                     },
                     KeyPress::D => {
-                        for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                        for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
                             transform.translate(Vector3::new(1.0, 0.0, 0.0));
                         }
                     },
                     KeyPress::Space => {
-                        for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                        for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
                             transform.translate(Vector3::new(0.0, 1.0, 0.0));
                         }
                     },
                     KeyPress::LShift => {
-                        for (camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                        for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
                             transform.translate(Vector3::new(0.0, -1.0, 0.0));
                         }
                     },

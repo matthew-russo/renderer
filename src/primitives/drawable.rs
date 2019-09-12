@@ -3,6 +3,7 @@ use crate::components::transform::Transform;
 use crate::components::texture::Texture;
 use crate::components::color::Color;
 
+#[derive(Debug)]
 pub struct Drawable {
     pub mesh: Mesh,
     pub transform: Transform,

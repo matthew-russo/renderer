@@ -2,7 +2,7 @@ use crate::primitives::vertex::Vertex;
 use specs::Component;
 use specs::VecStorage;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Mesh {
     pub key: String,
     pub vertices: Vec<Vertex>,

@@ -1,28 +1,22 @@
 use std::fs;
+use std::fs::File;
 use std::sync::{Arc, RwLock};
-use std::io::{Cursor, Read};
+use std::io::{BufReader};
 use std::collections::HashMap;
 
+use glsl_to_spirv;
+
+use hal::{Primitive, Limits, Instance};
+use hal::adapter::{Adapter, MemoryType, PhysicalDevice};
+use hal::command::{CommandBuffer, CommandBufferFlags, ClearColor, ClearDepthStencil, ClearValue, SubpassContents};
+use hal::device::{Device};
 use hal::format::{Format, AsFormat, ChannelType, Rgba8Srgb, Swizzle, Aspects};
 use hal::pass::Subpass;
-use hal::pso::{PipelineStage, ShaderStageFlags, VertexInputRate, Viewport};
-use hal::queue::{Submission, family::QueueGroup};
+use hal::pso::{DescriptorPool, PipelineStage, ShaderStageFlags, VertexInputRate, Viewport};
 use hal::pool::{CommandPool};
-use hal::window::{Extent2D};
-use hal::{
-    Device as HalDevice,
-    DescriptorPool,
-    Primitive,
-    Swapchain,
-    SwapchainConfig,
-    Instance,
-    PhysicalDevice,
-    Surface,
-    Adapter,
-    MemoryType,
-    Graphics,
-    Limits,
-};
+use hal::queue::{CommandQueue, Submission, QueueFamily};
+use hal::queue::family::QueueGroup;
+use hal::window::{Extent2D, Surface, Swapchain, SwapchainConfig};
 
 use image::load as load_image;
 
@@ -44,8 +38,9 @@ use crate::primitives::uniform_buffer_object::{
 use crate::primitives::drawable::Drawable;
 use crate::components::transform::Transform;
 use crate::components::texture::Texture;
+use crate::renderer::render_key::RenderKey;
 
-const DIMS: Extent2D = Extent2D { width: 1024,height: 768 };
+pub(crate) const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 
 const COLOR_RANGE: hal::image::SubresourceRange = hal::image::SubresourceRange {
     aspects: Aspects::COLOR,
@@ -98,12 +93,12 @@ pub struct BackendState<B: hal::Backend> {
 }
 
 #[cfg(not(any(feature="gl", feature="dx12", feature="vulkan", feature="metal")))]
-pub fn create_backend(_window_state: &WindowState) -> (BackendState<back::Backend>, ()) {
+pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (BackendState<back::Backend>, ()) {
     panic!("You must specify one of the valid backends using --features=<backend>, with \"gl\", \"dx12\", \"vulkan\", and \"metal\" being valid backends.");
 }
 
 #[cfg(feature="gl")]
-pub fn create_backend(window_state: &WindowState) -> (BackendState<back::Backend>, ()) {
+pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (BackendState<back::Backend>, ()) {
     let (mut adapters, mut surface) = {
         let window = {
             let builder = back::config_context(back::glutin::ContextBuilder::new(), Rgba8Srgb::SELF, None).with_vsync(true);
@@ -124,16 +119,13 @@ pub fn create_backend(window_state: &WindowState) -> (BackendState<back::Backend
 }
 
 #[cfg(any(feature="dx12", feature="vulkan", feature="metal"))]
-pub fn create_backend(window_state: &mut WindowState) -> (BackendState<back::Backend>, back::Instance) {
-    let window = window_state
-        .window_builder
-        .take()
-        .unwrap()
-        .build(&window_state.event_loop)
+pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (BackendState<back::Backend>, back::Instance) {
+    let window = window_builder
+        .build(event_loop)
         .unwrap();
 
-    let instance = back::Instance::create("matthew's spectacular rendering engine", 1);
-    let surface = instance.create_surface_from_raw(&window).unwrap();
+    let instance = back::Instance::create("matthew's spectacular rendering engine", 1).expect("failed to create an instance");
+    let surface = instance.create_surface(&window);
     let mut adapters = instance.enumerate_adapters();
 
     let backend_state = BackendState {
@@ -145,44 +137,30 @@ pub fn create_backend(window_state: &mut WindowState) -> (BackendState<back::Bac
     (backend_state, instance)
 }
 
-// TODO -> move this out of the renderer so the window and events live outside the scope of renderer
-pub struct WindowState {
-    event_loop: winit::event_loop::EventLoop<()>,
-    window_builder: Option<winit::window::WindowBuilder>,
-}
-
-impl WindowState {
-    pub fn new() -> Self {
-        let wb = winit::window::WindowBuilder::new()
-            .with_inner_size(winit::dpi::LogicalSize::new(
-                DIMS.width as _,
-                DIMS.height as _
-            ))
-            .with_title("matthew's spectacular rendering engine");
-
-        Self {
-            event_loop: winit::event_loop::EventLoop::new(),
-            window_builder: Some(wb)
-        }
-    }
-}
-
 struct DeviceState<B: hal::Backend> {
     device: B::Device,
     physical_device: B::PhysicalDevice,
-    queue_group: QueueGroup<B, Graphics>,
+    queue_group: QueueGroup<B>,
 }
 
 impl<B: hal::Backend> DeviceState<B> {
-    fn new(adapter: Adapter<B>, surface: &dyn Surface<B>) -> Self {
-        let (device, queue_group) = adapter
-            .open_with::<_, hal::Graphics>(1, |family| surface.supports_queue_family(family))
+    unsafe fn new(adapter: Adapter<B>, surface: &dyn Surface<B>) -> Self {
+        let family = adapter
+            .queue_families
+            .iter()
+            .find(|family|
+                surface.supports_queue_family(family) && family.queue_type().supports_graphics())
+            .unwrap();
+
+        let mut gpu = adapter
+            .physical_device
+            .open(&[(family, &[1.0])], hal::Features::empty())
             .unwrap();
 
         Self {
-            device,
+            device: gpu.device,
             physical_device: adapter.physical_device,
-            queue_group
+            queue_group: gpu.queue_groups.pop().unwrap()
         }
     }
 }
@@ -251,6 +229,7 @@ impl<B: hal::Backend> RenderPassState<B> {
 struct BufferState<B: hal::Backend> {
     buffer: Option<B::Buffer>,
     buffer_memory: Option<B::Memory>,
+    memory_is_mapped: bool,
     size: u64,
     device_state: Arc<RwLock<DeviceState<B>>>,
 }
@@ -260,7 +239,7 @@ impl<B: hal::Backend> BufferState<B> {
         self.buffer.as_ref().unwrap()
     } 
     
-    unsafe fn new<T>(
+    unsafe fn new<T: Sized>(
         device_state: &Arc<RwLock<DeviceState<B>>>,
         data_source: &[T],
         usage: hal::buffer::Usage,
@@ -303,17 +282,26 @@ impl<B: hal::Backend> BufferState<B> {
 
             // TODO: check transitions: read/write mapping and vertex buffer read
             {
-                let mut data_target = device
-                    .acquire_mapping_writer::<T>(&memory, 0..size)
-                    .unwrap();
-                data_target[0..data_source.len()].copy_from_slice(data_source);
-                device.release_mapping_writer(data_target).unwrap();
+                let mapping = device.map_memory(&memory, 0..size).unwrap();
+
+                let data_as_bytes = data_source
+                    .iter()
+                    .flat_map(|ubo| any_as_u8_slice(ubo))
+                    .collect::<Vec<u8>>();
+                std::ptr::copy_nonoverlapping(
+                    data_as_bytes.as_ptr(),
+                    mapping.offset(0),
+                    size as usize
+                );
+
+                device.unmap_memory(&memory);
             }
         }
 
         Self {
             buffer_memory: Some(memory),
             buffer: Some(buffer),
+            memory_is_mapped: false,
             device_state: device_state.clone(),
             size,
         }
@@ -331,15 +319,19 @@ impl<B: hal::Backend> BufferState<B> {
         assert!(offset + upload_size <= self.size);
 
         unsafe {
-            let mut data_target = device
-                .acquire_mapping_writer::<T>(
-                    self.buffer_memory.as_ref().unwrap(),
-                    offset..self.size
-                )
-                .unwrap();
+            let mapping = device.map_memory(self.buffer_memory.as_ref().unwrap(), offset..upload_size).unwrap();
 
-            data_target[0..data_source.len()].copy_from_slice(data_source);
-            device.release_mapping_writer(data_target).unwrap();
+            let data_as_bytes = data_source
+                .iter()
+                .flat_map(|ubo| any_as_u8_slice(ubo))
+                .collect::<Vec<u8>>();
+            std::ptr::copy_nonoverlapping(
+                data_as_bytes.as_ptr(),
+                mapping.offset(0),
+                upload_size as usize
+            );
+
+            device.unmap_memory(self.buffer_memory.as_ref().unwrap());
         }
     }
 }
@@ -354,7 +346,7 @@ impl<B: hal::Backend> Uniform<B> {
         device_state: &Arc<RwLock<DeviceState<B>>>,
         memory_types: &[MemoryType],
         data: &[T],
-        mut desc: DescSet<B>,
+        desc: DescSet<B>,
         binding: u32
     ) -> Self 
         where T: Copy,
@@ -385,10 +377,6 @@ impl<B: hal::Backend> Uniform<B> {
             desc: Some(desc)
         }
     }
-
-    fn get_layout(&self) -> &B::DescriptorSetLayout {
-        self.desc.as_ref().unwrap().get_layout()
-    }
 }
 
 struct PipelineState<B: hal::Backend> {
@@ -416,24 +404,16 @@ impl<B: hal::Backend> PipelineState<B> {
             .expect("Can't create pipeline layout");
 
         let vs_module = {
-            let glsl = fs::read_to_string("src/data/shaders/standard.vert").unwrap();
-            let spirv: Vec<u32> = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Vertex)
-                .unwrap()
-                .bytes()
-                .map(|b| b.unwrap() as u32)
-                .collect();
-
+            let glsl = fs::read_to_string("/Users/matthewrusso/projects/rust/vulkan_rendering/src/data/shaders/standard.vert").unwrap();
+            let mut spirv_file = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Vertex).unwrap();
+            let spirv = hal::pso::read_spirv(&mut spirv_file).unwrap();
             device.create_shader_module(&spirv[..]).unwrap()
         };
 
         let fs_module = {
-            let glsl = fs::read_to_string("src/data/shaders/standard.frag").unwrap();
-            let spirv: Vec<u32> = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Fragment)
-                .unwrap()
-                .bytes()
-                .map(|b| b.unwrap() as u32)
-                .collect();
-
+            let glsl = fs::read_to_string("/Users/matthewrusso/projects/rust/vulkan_rendering/src/data/shaders/standard.frag").unwrap();
+            let mut spirv_file = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Fragment).unwrap();
+            let spirv = hal::pso::read_spirv(&mut spirv_file).unwrap();
             device.create_shader_module(&spirv[..]).unwrap()
         };
 
@@ -580,8 +560,8 @@ impl<B: hal::Backend> SwapchainState<B> {
 struct FramebufferState<B: hal::Backend> {
     framebuffers: Option<Vec<B::Framebuffer>>,
     framebuffer_fences: Option<Vec<B::Fence>>,
-    command_pools: Option<Vec<hal::CommandPool<B, hal::Graphics>>>,
-    command_buffers: Option<Vec<hal::command::CommandBuffer<B, hal::Graphics, hal::command::MultiShot>>>,
+    command_pools: Option<Vec<B::CommandPool>>,
+    command_buffers: Option<Vec<B::CommandBuffer>>,
     frame_images: Option<Vec<(B::Image, B::ImageView)>>,
     acquire_semaphores: Option<Vec<B::Semaphore>>,
     present_semaphores: Option<Vec<B::Semaphore>>,
@@ -654,7 +634,7 @@ impl<B: hal::Backend> FramebufferState<B> {
         };
 
         let mut fences: Vec<B::Fence> = vec![];
-        let mut command_pools: Vec<hal::CommandPool<B, hal::Graphics>> = vec![];
+        let mut command_pools: Vec<B::CommandPool> = vec![];
         let mut acquire_semaphores: Vec<B::Semaphore> = vec![];
         let mut present_semaphores: Vec<B::Semaphore> = vec![];
 
@@ -665,8 +645,12 @@ impl<B: hal::Backend> FramebufferState<B> {
                     .read()
                     .unwrap()
                     .device
-                    .create_command_pool_typed(
-                        &device_state.read().unwrap().queue_group,
+                    .create_command_pool(
+                        device_state
+                            .read()
+                            .unwrap()
+                            .queue_group
+                            .family,
                         hal::pool::CommandPoolCreateFlags::empty(),
                     )
                     .expect("Can't create command pool"),
@@ -707,7 +691,7 @@ impl<B: hal::Backend> FramebufferState<B> {
     ) -> (
         Option<(
             &mut B::Fence,
-            &mut hal::command::CommandBuffer<B, hal::Graphics, hal::command::MultiShot>
+            &mut B::CommandBuffer
         )>,
         Option<(&mut B::Semaphore, &mut B::Semaphore)>,
     ) {
@@ -751,12 +735,13 @@ impl<B: hal::Backend> ImageState<B> {
         desc_set: DescSet<B>,
         device_state: &Arc<RwLock<DeviceState<B>>>,
         adapter_state: &AdapterState<B>,
-        usage: hal::buffer::Usage,
-        command_pool: &mut CommandPool<B, Graphics>
+        _usage: hal::buffer::Usage,
+        command_pool: &mut B::CommandPool,
+        img_path: &str,
     ) -> Self {
-        // TODO -> don't use hard coded image path. pass the image_data in
-        let img_data = include_bytes!("../data/textures/chalet.jpg");
-        let img = load_image(Cursor::new(&img_data[..]), image::JPEG)
+        let img_file = File::open(img_path).unwrap();
+        let img_reader = BufReader::new(img_file);
+        let img = load_image(img_reader, image::JPEG)
             .unwrap()
             .to_rgba();
 
@@ -767,18 +752,10 @@ impl<B: hal::Backend> ImageState<B> {
         let row_pitch = (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
         let upload_size = (height * row_pitch) as u64;
 
-        let mut image_upload_buffer = device_state
-            .read()
-            .unwrap()
-            .device
-            .create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC)
-            .unwrap();
+        let readable_device_state = device_state.read().unwrap();
 
-        let image_mem_reqs = device_state
-            .read()
-            .unwrap()
-            .device
-            .get_buffer_requirements(&image_upload_buffer);
+        let mut image_upload_buffer = readable_device_state.device.create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC).unwrap();
+        let image_mem_reqs = readable_device_state.device.get_buffer_requirements(&image_upload_buffer);
 
         let upload_type = adapter_state
             .memory_types
@@ -786,50 +763,31 @@ impl<B: hal::Backend> ImageState<B> {
             .enumerate()
             .position(|(id, mem_type)| {
                 image_mem_reqs.type_mask & (1 << id) != 0
-                && mem_type.properties.contains(hal::memory::Properties::CPU_VISIBLE)
+                && mem_type.properties.contains(
+                    hal::memory::Properties::CPU_VISIBLE | hal::memory::Properties::COHERENT)
             })
             .unwrap()
             .into();
 
-        let image_upload_memory = device_state
-            .read()
-            .unwrap()
-            .device
-            .allocate_memory(upload_type, image_mem_reqs.size)
-            .unwrap();
+        let image_upload_memory = {
+            let memory = readable_device_state.device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
+            readable_device_state.device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
+            let mapping = readable_device_state.device.map_memory(&memory, 0..upload_size).unwrap();
 
-        device_state
-            .read()
-            .unwrap()
-            .device
-            .bind_buffer_memory(&image_upload_memory, 0, &mut image_upload_buffer)
-            .unwrap();
+            for y in 0..height as usize {
+                let row = &(*img)[y * (width as usize) * image_stride..(y+1) * (width as usize) * image_stride];
+                std::ptr::copy_nonoverlapping(
+                    row.as_ptr(),
+                    mapping.offset(y as isize * row_pitch as isize),
+                    width as usize * image_stride
+                );
+            }
 
-        let mut data = device_state
-            .read()
-            .unwrap()
-            .device
-            .acquire_mapping_writer::<u8>(&image_upload_memory, 0..image_mem_reqs.size)
-            .unwrap();
+            readable_device_state.device.unmap_memory(&memory);
+            memory
+        };
 
-        for y in 0..height as usize {
-            let row = &(*img)[y * (width as usize) * image_stride..(y+1) * (width as usize) * image_stride];
-            let dest_base = y * row_pitch as usize;
-            data[dest_base..dest_base + row.len()].copy_from_slice(row);
-        }
-
-        device_state
-            .read()
-            .unwrap()
-            .device
-            .release_mapping_writer(data)
-            .unwrap();
-
-        let mut image = device_state
-            .read()
-            .unwrap()
-            .device
-            .create_image(
+        let mut image = readable_device_state.device.create_image(
                 kind,
                 1,
                 Rgba8Srgb::SELF,
@@ -839,7 +797,7 @@ impl<B: hal::Backend> ImageState<B> {
             )
             .unwrap();
 
-        let image_req = device_state.read().unwrap().device.get_image_requirements(&image);
+        let image_req = readable_device_state.device.get_image_requirements(&image);
 
         let device_type = adapter_state
             .memory_types
@@ -852,29 +810,13 @@ impl<B: hal::Backend> ImageState<B> {
             .unwrap()
             .into();
 
-        let image_memory = device_state
-            .read()
-            .unwrap()
-            .device
-            .allocate_memory(device_type, image_req.size)
-            .unwrap();
+        let image_memory = readable_device_state.device.allocate_memory(device_type, image_req.size).unwrap();
+        readable_device_state.device.bind_image_memory(&image_memory, 0, &mut image).unwrap();
 
-        device_state
-            .read()
-            .unwrap()
-            .device
-            .bind_image_memory(&image_memory, 0, &mut image)
-            .unwrap();
+        let mut transferred_image_fence = readable_device_state.device.create_fence(false).expect("Can't create fence");
 
-        let mut transferred_image_fence = device_state
-            .read()
-            .unwrap()
-            .device
-            .create_fence(false)
-            .expect("Can't create fence");
-
-        let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::OneShot>();
-        cmd_buffer.begin();
+        let mut cmd_buffer = command_pool.allocate_one(hal::command::Level::Primary);
+        cmd_buffer.begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
 
         let image_barrier = hal::memory::Barrier::Image {
             states: (hal::image::Access::empty(), hal::image::Layout::Undefined)..(hal::image::Access::TRANSFER_WRITE, hal::image::Layout::TransferDstOptimal),
@@ -926,7 +868,19 @@ impl<B: hal::Backend> ImageState<B> {
 
         cmd_buffer.finish();
 
-        device_state.write().unwrap().queue_group.queues[0].submit_without_semaphores(Some(&cmd_buffer), Some(&mut transferred_image_fence));
+        device_state
+            .write()
+            .unwrap()
+            .queue_group
+            .queues[0]
+            .submit_without_semaphores(Some(&cmd_buffer), Some(&mut transferred_image_fence));
+
+        device_state
+            .write()
+            .unwrap()
+            .device
+            .wait_for_fence(&transferred_image_fence, !0)
+            .unwrap();
 
         device_state.read().unwrap().device.destroy_buffer(image_upload_buffer);
         device_state.read().unwrap().device.free_memory(image_upload_memory);
@@ -971,22 +925,19 @@ impl<B: hal::Backend> ImageState<B> {
     }
 
     pub fn wait_for_transfer_completion(&self) {
-        let device = &self.desc_set.desc_set_layout.device_state.read().unwrap().device;
+        let readable_desc_set = self.desc_set.desc_set_layout.read().unwrap();
+        let device = &readable_desc_set.device_state.read().unwrap().device;
         unsafe {
             device
                 .wait_for_fence(&self.transferred_image_fence.as_ref().unwrap(), !0)
                 .unwrap();
         }
     }
-
-    pub fn get_layout(&self) -> &B::DescriptorSetLayout {
-        self.desc_set.desc_set_layout.layout.as_ref().unwrap()
-    }
 }
 
 struct DescSet<B: hal::Backend> {
     descriptor_set: B::DescriptorSet,
-    desc_set_layout: DescSetLayout<B>,
+    desc_set_layout: Arc<RwLock<DescSetLayout<B>>>,
 }
 
             // vec![
@@ -1022,10 +973,6 @@ impl<B: hal::Backend> DescSet<B> {
             device.write_descriptor_sets(descriptor_set_writes);
         }
     }
-
-    fn get_layout(&self) -> &B::DescriptorSetLayout {
-        self.desc_set_layout.layout.as_ref().unwrap()
-    }
 }
 
 struct DescSetWrite<WI> {
@@ -1055,16 +1002,7 @@ impl<B: hal::Backend> DescSetLayout<B> {
         }
     }
 
-    fn create_set(self, descriptor_pool: &mut B::DescriptorPool) -> DescSet<B> {
-        let descriptor_set = unsafe {
-            descriptor_pool.allocate_set(&self.layout.as_ref().unwrap())
-        }.unwrap();
-       
-        DescSet {
-            descriptor_set,
-            desc_set_layout: self
-        }
-    }
+
 }
 
 pub struct Renderer<B: hal::Backend> {
@@ -1075,14 +1013,14 @@ pub struct Renderer<B: hal::Backend> {
     backend_state: BackendState<B>,
     device_state: Arc<RwLock<DeviceState<B>>>,
     swapchain_state: SwapchainState<B>,
-    window_state: WindowState,
     render_pass_state: RenderPassState<B>,
     pipeline_state: PipelineState<B>,
     framebuffer_state: FramebufferState<B>,
    
     camera_transform: Option<Transform>,
 
-    image_state: ImageState<B>,
+    image_desc_set_layout: Arc<RwLock<DescSetLayout<B>>>,
+    image_states: HashMap<RenderKey, ImageState<B>>,
     vertex_buffer_state: Option<BufferState<B>>,
     index_buffer_state: Option<BufferState<B>>,
     camera_uniform: Uniform<B>,
@@ -1090,10 +1028,12 @@ pub struct Renderer<B: hal::Backend> {
 
     recreate_swapchain: bool,
     resize_dims: Extent2D,
+
+    last_drawables: Option<Vec<Drawable>>,
 }
 
 impl<B: hal::Backend> Renderer<B> {
-    pub unsafe fn new(mut backend_state: BackendState<B>, window_state: WindowState) -> Self {
+    pub unsafe fn new(mut backend_state: BackendState<B>) -> Self {
         let device_state = Arc::new(
             RwLock::new(
                 DeviceState::new(
@@ -1103,19 +1043,19 @@ impl<B: hal::Backend> Renderer<B> {
             )
         );
 
-        let mut image_desc_pool = device_state
+        let mut uniform_desc_pool = device_state
             .read()
             .unwrap()
             .device
             .create_descriptor_pool(
-                1,
+                2,
                 &[
                     hal::pso::DescriptorRangeDesc {
-                        ty: hal::pso::DescriptorType::SampledImage,
+                        ty: hal::pso::DescriptorType::UniformBuffer,
                         count: 1
                     },
                     hal::pso::DescriptorRangeDesc {
-                        ty: hal::pso::DescriptorType::Sampler,
+                        ty: hal::pso::DescriptorType::UniformBufferDynamic,
                         count: 1
                     }
                 ],
@@ -1123,34 +1063,7 @@ impl<B: hal::Backend> Renderer<B> {
             )
             .expect("Can't create descriptor pool");
 
-        let image_desc_set_layout = DescSetLayout::new(
-            &device_state,
-            vec![hal::pso::DescriptorSetLayoutBinding {
-                binding: 0,
-                ty: hal::pso::DescriptorType::CombinedImageSampler,
-                count: 1,
-                stage_flags: ShaderStageFlags::FRAGMENT,
-                immutable_samplers: false
-            }]
-        );
-
-        let image_desc_set = image_desc_set_layout.create_set(&mut image_desc_pool);
-
-        let mut uniform_desc_pool = device_state
-            .read()
-            .unwrap()
-            .device
-            .create_descriptor_pool(
-                2,
-                &[hal::pso::DescriptorRangeDesc {
-                    ty: hal::pso::DescriptorType::UniformBuffer,
-                    count: 2
-                }],
-                hal::pso::DescriptorPoolCreateFlags::empty()
-            )
-            .expect("Can't create descriptor pool");
-
-        let camera_uniform_desc_set_layout = DescSetLayout::new(
+        let camera_uniform_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
             &device_state,
             vec![hal::pso::DescriptorSetLayoutBinding {
                 binding: 0,
@@ -1159,11 +1072,11 @@ impl<B: hal::Backend> Renderer<B> {
                 stage_flags: ShaderStageFlags::VERTEX,
                 immutable_samplers: false,
             }]
-        );
+        )));
 
-        let camera_uniform_desc_set = camera_uniform_desc_set_layout.create_set(&mut uniform_desc_pool);
+        let camera_uniform_desc_set = Self::create_set(&camera_uniform_desc_set_layout, &mut uniform_desc_pool);
 
-        let object_uniform_desc_set_layout = DescSetLayout::new(
+        let object_uniform_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
             &device_state,
             vec![hal::pso::DescriptorSetLayoutBinding {
                 binding: 0,
@@ -1172,37 +1085,67 @@ impl<B: hal::Backend> Renderer<B> {
                 stage_flags: ShaderStageFlags::VERTEX,
                 immutable_samplers: false,
             }]
-        );
+        )));
 
-        let object_uniform_desc_set = object_uniform_desc_set_layout.create_set(&mut uniform_desc_pool);
+        let object_uniform_desc_set = Self::create_set(&object_uniform_desc_set_layout, &mut uniform_desc_pool);
 
+        let mut image_desc_pool = device_state
+            .read()
+            .unwrap()
+            .device
+            .create_descriptor_pool(
+                2,
+                &[
+                    hal::pso::DescriptorRangeDesc {
+                        ty: hal::pso::DescriptorType::CombinedImageSampler,
+                        count: 2
+                    }
+                ],
+                hal::pso::DescriptorPoolCreateFlags::empty()
+            )
+            .expect("Can't create descriptor pool");
+
+        let image_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
+            &device_state,
+            vec![hal::pso::DescriptorSetLayoutBinding {
+                binding: 0,
+                ty: hal::pso::DescriptorType::CombinedImageSampler,
+                count: 1,
+                stage_flags: ShaderStageFlags::FRAGMENT,
+                immutable_samplers: false
+            }]
+        )));
+
+        let image_desc_set = Self::create_set(&image_desc_set_layout, &mut image_desc_pool);
         let mut staging_pool = device_state
             .read()
             .unwrap()
             .device
-            .create_command_pool_typed(
-                &device_state
+            .create_command_pool(
+                device_state
                     .read()
                     .unwrap()
-                    .queue_group,
+                    .queue_group
+                    .family,
                 hal::pool::CommandPoolCreateFlags::empty(),
             )
             .expect("Can't create staging command pool");
-
-        let image_state = ImageState::new(
+        let base_image_state = ImageState::new(
             image_desc_set,
             &device_state,
             &backend_state.adapter_state,
             hal::buffer::Usage::TRANSFER_SRC,
-            &mut staging_pool
+            &mut staging_pool,
+            "/Users/matthewrusso/projects/rust/vulkan_rendering/src/data/textures/chalet.jpg"
         );
-
         device_state
             .read()
             .unwrap()
             .device
-            .destroy_command_pool(staging_pool.into_raw());
-    
+            .destroy_command_pool(staging_pool);
+        let mut image_states = HashMap::new();
+        image_states.insert(RenderKey::from(&None), base_image_state);
+
         // TODO -> merge the camera transform and ubo initialization
         let mut camera_transform = Transform::new();
         camera_transform.translate(Vector3::new(0.0, 0.0, 6.0));
@@ -1253,16 +1196,16 @@ impl<B: hal::Backend> Renderer<B> {
             &device_state,
             render_pass_state.render_pass.as_ref().unwrap(),
             vec![
-                image_state.get_layout(),
-                camera_uniform.get_layout(),
-                object_uniform.get_layout()
+                camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
+                object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
+                image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
             ]
         );
         let viewport = Self::create_viewport(&swapchain_state);
 
         let resize_dims = Extent2D {
-            width: 0,
-            height: 0,
+            width: DIMS.width,
+            height: DIMS.height,
         };
         
         Self {
@@ -1273,14 +1216,14 @@ impl<B: hal::Backend> Renderer<B> {
             backend_state,
             device_state,
             swapchain_state,
-            window_state,
             render_pass_state,
             pipeline_state,
             framebuffer_state,
 
             camera_transform: Some(camera_transform),
 
-            image_state,
+            image_desc_set_layout,
+            image_states,
             vertex_buffer_state: None,
             index_buffer_state: None,
             camera_uniform,
@@ -1288,6 +1231,7 @@ impl<B: hal::Backend> Renderer<B> {
 
             recreate_swapchain: false,
             resize_dims,
+            last_drawables: None,
         }
     }
 
@@ -1357,29 +1301,26 @@ impl<B: hal::Backend> Renderer<B> {
         CameraUniformBufferObject::new(view, proj)
     }
 
-    unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> Vec<u8> {
-        std::slice::from_raw_parts(
-            (p as *const T) as *const u8,
-            std::mem::size_of::<T>(),
-        )
-        .to_vec()
-    }
-
     // TODO -> change this to just map_uniform_data and pass in the uniform we're targeting
     pub unsafe fn map_object_uniform_data(&mut self, uniform_data: Vec<ObjectUniformBufferObject>) {
         let device_writable = &mut self.device_state.write().unwrap().device;
 
         // TODO -> Pass in the uniform that we need
-        let uniform_buffer = self
+        let mut uniform_buffer = self
             .object_uniform
             .buffer
-            .as_ref()
+            .as_mut()
             .unwrap();
 
         let uniform_memory = uniform_buffer
             .buffer_memory
             .as_ref()
             .unwrap();
+
+        if uniform_buffer.memory_is_mapped {
+            device_writable.unmap_memory(uniform_memory);
+            uniform_buffer.memory_is_mapped = false;
+        }
 
         match device_writable.map_memory(uniform_memory, 0..uniform_buffer.size) {
             Ok(mem_ptr) => {
@@ -1394,11 +1335,10 @@ impl<B: hal::Backend> Renderer<B> {
 
                 let data_as_bytes = uniform_data
                     .iter()
-                    .flat_map(|ubo| Self::any_as_u8_slice(ubo))
+                    .flat_map(|ubo| any_as_u8_slice(ubo))
                     .collect::<Vec<u8>>();
 
                 let slice = std::slice::from_raw_parts_mut(mem_ptr, data_as_bytes.len());
-                
                 slice.copy_from_slice(&data_as_bytes[..]);
                 
                 // if !coherent {
@@ -1412,9 +1352,61 @@ impl<B: hal::Backend> Renderer<B> {
             },
             Err(e) => panic!("error mapping memory: {:?}", e),
         }
+
+        uniform_buffer.memory_is_mapped = true;
     }
 
-    unsafe fn generate_vertex_and_index_buffers(&mut self, meshes: Vec<Mesh>) {
+    fn create_set(desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>, descriptor_pool: &mut B::DescriptorPool) -> DescSet<B> {
+        let descriptor_set = unsafe {
+            descriptor_pool.allocate_set(desc_set_layout.read().unwrap().layout.as_ref().unwrap())
+        }.unwrap();
+
+        DescSet {
+            descriptor_set,
+            desc_set_layout: desc_set_layout.clone()
+        }
+    }
+
+    unsafe fn generate_image_states(&mut self, textures: Vec<&Texture>) {
+        if textures.is_empty() {
+           return;
+        }
+
+        let mut staging_pool = self.device_state
+            .read()
+            .unwrap()
+            .device
+            .create_command_pool(
+                self.device_state
+                    .read()
+                    .unwrap()
+                    .queue_group
+                    .family,
+                hal::pool::CommandPoolCreateFlags::empty(),
+            )
+            .expect("Can't create staging command pool");
+
+        for texture in textures.into_iter() {
+            let image_desc_set = Self::create_set(&self.image_desc_set_layout, self.image_desc_pool.as_mut().unwrap());
+            let image_state = ImageState::new(
+                image_desc_set,
+                &self.device_state,
+                &self.backend_state.adapter_state,
+                hal::buffer::Usage::TRANSFER_SRC,
+                &mut staging_pool,
+                &texture.path
+            );
+            self.image_states.insert(RenderKey::from(texture), image_state);
+        }
+
+        self.device_state
+            .read()
+            .unwrap()
+            .device
+            .destroy_command_pool(staging_pool);
+    }
+
+    unsafe fn generate_vertex_and_index_buffers(&mut self, meshes: Vec<&Mesh>) {
         let vertices = meshes
             .iter()
             .flat_map(|m| {
@@ -1452,11 +1444,9 @@ impl<B: hal::Backend> Renderer<B> {
 
         self.vertex_buffer_state = Some(vertex_buffer_state);
         self.index_buffer_state = Some(index_buffer_state);
-
-        self.generate_cmd_buffers(meshes);
     }
 
-    unsafe fn generate_cmd_buffers(&mut self, meshes: Vec<Mesh>) {
+    unsafe fn generate_cmd_buffers(&mut self, meshes_by_texture: HashMap<Option<Texture>, Vec<&Mesh>>) {
         let framebuffers = self.framebuffer_state
             .framebuffers
             .as_ref()
@@ -1471,15 +1461,15 @@ impl<B: hal::Backend> Renderer<B> {
 
         // TODO -> assert all sizes are same and all options are "Some"
 
-        let mut command_buffers: Vec<hal::command::CommandBuffer<B, hal::Graphics, hal::command::MultiShot>> = Vec::new();
+        let mut command_buffers: Vec<B::CommandBuffer> = Vec::new();
 
         for current_buffer_index in 0..num_buffers {
             let framebuffer = &framebuffers[current_buffer_index];
             let command_pool = &mut command_pools[current_buffer_index];
             
             // Rendering
-            let mut cmd_buffer = command_pool.acquire_command_buffer::<hal::command::MultiShot>();
-            cmd_buffer.begin(false);
+            let mut cmd_buffer = command_pool.allocate_one(hal::command::Level::Primary);
+            cmd_buffer.begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
 
             cmd_buffer.set_viewports(0, &[self.viewport.clone()]);
             cmd_buffer.set_scissors(0, &[self.viewport.rect]);
@@ -1492,15 +1482,18 @@ impl<B: hal::Backend> Renderer<B> {
                 index_type: hal::IndexType::U32
             });
 
-            {
-                let mut encoder = cmd_buffer.begin_render_pass_inline(
+            for (tex, meshes) in meshes_by_texture.iter() {
+                println!("generating cmds for texture: {:?}, numMeshs: {:?}", tex, meshes.len());
+
+                cmd_buffer.begin_render_pass(
                     self.render_pass_state.render_pass.as_ref().unwrap(),
                     &framebuffer,
                     self.viewport.rect,
                     &[
-                        hal::command::ClearValue::Color(hal::command::ClearColor::Sfloat([0.0, 0.0, 0.0, 1.0])),
-                        hal::command::ClearValue::DepthStencil(hal::command::ClearDepthStencil(1.0, 0))
+                        ClearValue { color: ClearColor { float32: [0.7, 0.2, 0.0, 1.0] } },
+                        ClearValue { depth_stencil: ClearDepthStencil {depth: 1.0, stencil: 0} }
                     ],
+                    SubpassContents::Inline
                 );
                 
                 let mut current_mesh_index = 0;
@@ -1509,19 +1502,19 @@ impl<B: hal::Backend> Renderer<B> {
                 for (i, mesh) in meshes.iter().enumerate() {
                     let dynamic_offset = i as u32 * dynamic_stride; 
 
-                    encoder.bind_graphics_descriptor_sets(
+                    cmd_buffer.bind_graphics_descriptor_sets(
                         &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
                         0,
                         vec![
-                            &self.image_state.desc_set.descriptor_set,
                             &self.camera_uniform.desc.as_ref().unwrap().descriptor_set,
-                            &self.object_uniform.desc.as_ref().unwrap().descriptor_set
+                            &self.object_uniform.desc.as_ref().unwrap().descriptor_set,
+                            &self.image_states.get(&RenderKey::from(tex)).unwrap().desc_set.descriptor_set
                         ],
                         &[dynamic_offset],
                     );
                     
                     let num_indices = mesh.indices.len() as u32;
-                    encoder.draw_indexed(current_mesh_index..(current_mesh_index + num_indices), 0, 0..1);
+                    cmd_buffer.draw_indexed(current_mesh_index..(current_mesh_index + num_indices), 0, 0..1);
                     current_mesh_index += num_indices;
                 }
             }
@@ -1541,30 +1534,34 @@ impl<B: hal::Backend> Renderer<B> {
                 .collect::<Vec<ObjectUniformBufferObject>>()
         );
 
-        let unique_textures = get_unique_textures();
-        self.generate_images();
+        self.generate_image_states(
+            drawables
+                .iter()
+                .filter(|d| d.texture.is_some())
+                .map(|d| d.texture.as_ref().unwrap())
+                .collect());
 
-        let meshes = get_meshes();
         self.generate_vertex_and_index_buffers(
             drawables
                 .iter_mut()
-                .map(|d| d.mesh)
-                .collect::<Vec<Mesh>>()
+                .map(|d| &d.mesh)
+                .collect::<Vec<&Mesh>>()
         );
 
         let meshes_by_texture = drawables
             .iter()
-            .fold(HashMap::<Texture, Vec<Mesh>>::new(), |mut map, drawable| {
-                let mut meshes_by_texture = map.entry(drawable.texture).or_insert(Vec::new());
-                meshes_by_texture.push(drawable.mesh);
-                meshes_by_texture
+            .fold(HashMap::<Option<Texture>, Vec<&Mesh>>::new(), |mut map, drawable| {
+                let meshes_by_texture = map.entry(drawable.texture.clone()).or_insert(Vec::new());
+                meshes_by_texture.push(&drawable.mesh);
+                map
             });
 
-        self.generate_cmd_buffers(meshes_by_texture)
+        self.generate_cmd_buffers(meshes_by_texture);
+        self.last_drawables = Some(drawables);
     }
 
     pub unsafe fn draw_frame(&mut self) {
-        let mut camera_transform = self.camera_transform.take().unwrap();
+        let camera_transform = self.camera_transform.take().unwrap();
 
         self.camera_transform = Some(camera_transform);
 
@@ -1580,7 +1577,7 @@ impl<B: hal::Backend> Renderer<B> {
 
         let sem_index = self.framebuffer_state.next_acq_pre_pair_index();
 
-        let frame: hal::SwapImageIndex = {
+        let frame: hal::window::SwapImageIndex = {
             let (acquire_semaphore, _) = self
                 .framebuffer_state
                 .get_frame_data(None, Some(sem_index))
@@ -1636,7 +1633,7 @@ impl<B: hal::Backend> Renderer<B> {
             .submit(submission, Some(framebuffer_fence));
 
         // present frame
-        if let Err(_e) = self
+        if let Err(e) = self
             .swapchain_state
             .swapchain
             .as_mut()
@@ -1647,11 +1644,14 @@ impl<B: hal::Backend> Renderer<B> {
                 Some(&*image_present_semaphore),
             )
         {
+            println!("error on presenting: {:?}", e);
             self.recreate_swapchain = true;
         }
     }
 
     unsafe fn recreate_swapchain(&mut self) {
+        println!("recreating swapchain");
+
         self.device_state.read().unwrap().device.wait_idle().unwrap();
 
         self.swapchain_state = SwapchainState::new(&mut self.backend_state, &self.device_state);
@@ -1679,13 +1679,15 @@ impl<B: hal::Backend> Renderer<B> {
             &self.device_state,
             self.render_pass_state.render_pass.as_ref().unwrap(),
             vec![
-                self.image_state.get_layout(),
-                self.camera_uniform.get_layout(),
-                self.object_uniform.get_layout()
+                self.camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
+                self.object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
+                self.image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
             ],
         );
 
         self.viewport = Self::create_viewport(&self.swapchain_state);
+        let drawables = self.last_drawables.take().unwrap();
+        self.update_drawables(drawables);
     }
 }
 
@@ -1809,7 +1811,8 @@ impl<B: hal::Backend> Drop for DescSetLayout<B> {
 impl<B: hal::Backend> Drop for ImageState<B> {
     fn drop(&mut self) {
         unsafe {
-            let device = &self.desc_set.desc_set_layout.device_state.read().unwrap().device;
+            let readable_desc_set_layout = self.desc_set.desc_set_layout.read().unwrap();
+            let device = &readable_desc_set_layout.device_state.read().unwrap().device;
 
             let fence = self.transferred_image_fence.take().unwrap();
             device.wait_for_fence(&fence, !0).unwrap();
@@ -1856,7 +1859,7 @@ impl<B: hal::Backend> Drop for FramebufferState<B> {
             }
 
             for command_pool in self.command_pools.take().unwrap() {
-                device.destroy_command_pool(command_pool.into_raw());
+                device.destroy_command_pool(command_pool);
             }
 
             for acquire_semaphore in self.acquire_semaphores.take().unwrap() {
@@ -1883,3 +1886,10 @@ impl<B: hal::Backend> Drop for FramebufferState<B> {
     }
 }
 
+unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> Vec<u8> {
+    std::slice::from_raw_parts(
+        (p as *const T) as *const u8,
+        std::mem::size_of::<T>(),
+    )
+        .to_vec()
+}

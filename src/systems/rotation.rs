@@ -31,7 +31,7 @@ impl<'a> System<'a> for Rotation {
         
         let delta_time = self.time.read().unwrap().delta_time as f32 * 0.01;
 
-        for (transform, mesh) in (&mut transform_storage, &mesh_storage).join() {
+        for (transform, _mesh) in (&mut transform_storage, &mesh_storage).join() {
             let r = rng.gen::<f32>();
             let unique_delta = r * delta_time * 2.0;
             transform.rotate(2.0 * unique_delta, 10.0 * unique_delta, 20.0 * unique_delta);

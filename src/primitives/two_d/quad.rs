@@ -23,7 +23,7 @@ impl Quad {
 
         println!("VERTICES: {:?}\n\n", &vertices);
 
-        let mut indices = vec![
+        let indices = vec![
             0, 1, 2, 2, 3, 0
         ];
 
