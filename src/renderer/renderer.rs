@@ -752,10 +752,8 @@ impl<B: hal::Backend> ImageState<B> {
         let row_pitch = (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
         let upload_size = (height * row_pitch) as u64;
 
-        let readable_device_state = device_state.read().unwrap();
-
-        let mut image_upload_buffer = readable_device_state.device.create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC).unwrap();
-        let image_mem_reqs = readable_device_state.device.get_buffer_requirements(&image_upload_buffer);
+        let mut image_upload_buffer = device_state.read().unwrap().device.create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC).unwrap();
+        let image_mem_reqs = device_state.read().unwrap().device.get_buffer_requirements(&image_upload_buffer);
 
         let upload_type = adapter_state
             .memory_types
@@ -770,9 +768,9 @@ impl<B: hal::Backend> ImageState<B> {
             .into();
 
         let image_upload_memory = {
-            let memory = readable_device_state.device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
-            readable_device_state.device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
-            let mapping = readable_device_state.device.map_memory(&memory, 0..upload_size).unwrap();
+            let memory = device_state.read().unwrap().device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
+            device_state.read().unwrap().device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
+            let mapping = device_state.read().unwrap().device.map_memory(&memory, 0..upload_size).unwrap();
 
             for y in 0..height as usize {
                 let row = &(*img)[y * (width as usize) * image_stride..(y+1) * (width as usize) * image_stride];
@@ -783,11 +781,11 @@ impl<B: hal::Backend> ImageState<B> {
                 );
             }
 
-            readable_device_state.device.unmap_memory(&memory);
+            device_state.read().unwrap().device.unmap_memory(&memory);
             memory
         };
 
-        let mut image = readable_device_state.device.create_image(
+        let mut image = device_state.read().unwrap().device.create_image(
                 kind,
                 1,
                 Rgba8Srgb::SELF,
@@ -797,7 +795,7 @@ impl<B: hal::Backend> ImageState<B> {
             )
             .unwrap();
 
-        let image_req = readable_device_state.device.get_image_requirements(&image);
+        let image_req = device_state.read().unwrap().device.get_image_requirements(&image);
 
         let device_type = adapter_state
             .memory_types
@@ -810,10 +808,10 @@ impl<B: hal::Backend> ImageState<B> {
             .unwrap()
             .into();
 
-        let image_memory = readable_device_state.device.allocate_memory(device_type, image_req.size).unwrap();
-        readable_device_state.device.bind_image_memory(&image_memory, 0, &mut image).unwrap();
+        let image_memory = device_state.read().unwrap().device.allocate_memory(device_type, image_req.size).unwrap();
+        device_state.read().unwrap().device.bind_image_memory(&image_memory, 0, &mut image).unwrap();
 
-        let mut transferred_image_fence = readable_device_state.device.create_fence(false).expect("Can't create fence");
+        let mut transferred_image_fence = device_state.read().unwrap().device.create_fence(false).expect("Can't create fence");
 
         let mut cmd_buffer = command_pool.allocate_one(hal::command::Level::Primary);
         cmd_buffer.begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
@@ -1001,8 +999,6 @@ impl<B: hal::Backend> DescSetLayout<B> {
             device_state: device_state.clone()
         }
     }
-
-
 }
 
 pub struct Renderer<B: hal::Backend> {
@@ -1017,8 +1013,6 @@ pub struct Renderer<B: hal::Backend> {
     pipeline_state: PipelineState<B>,
     framebuffer_state: FramebufferState<B>,
    
-    camera_transform: Option<Transform>,
-
     image_desc_set_layout: Arc<RwLock<DescSetLayout<B>>>,
     image_states: HashMap<RenderKey, ImageState<B>>,
     vertex_buffer_state: Option<BufferState<B>>,
@@ -1130,6 +1124,7 @@ impl<B: hal::Backend> Renderer<B> {
                 hal::pool::CommandPoolCreateFlags::empty(),
             )
             .expect("Can't create staging command pool");
+
         let base_image_state = ImageState::new(
             image_desc_set,
             &device_state,
@@ -1147,16 +1142,10 @@ impl<B: hal::Backend> Renderer<B> {
         image_states.insert(RenderKey::from(&None), base_image_state);
 
         // TODO -> merge the camera transform and ubo initialization
-        let mut camera_transform = Transform::new();
-        camera_transform.translate(Vector3::new(0.0, 0.0, 6.0));
         let camera_uniform_buffer_object = CameraUniformBufferObject::new(
             Matrix4::identity(),
             Matrix4::identity()
         );
-        let object_uniform_buffer_object = ObjectUniformBufferObject::new(
-            Matrix4::identity()
-        );
-
         let camera_uniform = Uniform::new(
             &device_state,
             &backend_state.adapter_state.memory_types,
@@ -1165,6 +1154,9 @@ impl<B: hal::Backend> Renderer<B> {
             0
         );
 
+        let object_uniform_buffer_object = ObjectUniformBufferObject::new(
+            Matrix4::identity()
+        );
         let object_uniform = Uniform::new(
             &device_state,
             &backend_state.adapter_state.memory_types,
@@ -1219,8 +1211,6 @@ impl<B: hal::Backend> Renderer<B> {
             render_pass_state,
             pipeline_state,
             framebuffer_state,
-
-            camera_transform: Some(camera_transform),
 
             image_desc_set_layout,
             image_states,
@@ -1407,26 +1397,35 @@ impl<B: hal::Backend> Renderer<B> {
     }
 
     unsafe fn generate_vertex_and_index_buffers(&mut self, meshes: Vec<&Mesh>) {
-        let vertices = meshes
-            .iter()
-            .flat_map(|m| {
-                m.vertices.iter().map(|v| *v)
-            })
-            .collect::<Vec<Vertex>>();
+        // let vertices = meshes
+        //     .iter()
+        //     .flat_map(|m| {
+        //         m.vertices.iter().map(|v| *v)
+        //     })
+        //     .collect::<Vec<Vertex>>();
 
-        let mut current_index = 0;
-        let indices = meshes
-            .iter()
-            .flat_map(|m| {
-                let indices = m.indices
-                    .iter()
-                    .map(move |val| current_index + val);
+        let vertices = vec![
+            Vertex::new([-0.5f32,  0.5f32, 1.0f32], [1.0f32, 1.0f32, 1.0f32], [1.0f32, 1.0f32]),
+            Vertex::new([0.5f32,  0.5f32, 1.0f32], [1.0f32, 1.0f32, 1.0f32], [1.0f32, 1.0f32]),
+            Vertex::new([0.5f32, -0.5f32, 1.0f32], [1.0f32, 1.0f32, 1.0f32], [1.0f32, 1.0f32]),
+            Vertex::new([-0.5f32, -0.5f32, 1.0f32], [1.0f32, 1.0f32, 1.0f32], [1.0f32, 1.0f32]),
+        ];
 
-                current_index += m.vertices.len() as u32;
+        // let mut current_index = 0;
+        // let indices = meshes
+        //     .iter()
+        //     .flat_map(|m| {
+        //         let indices = m.indices
+        //             .iter()
+        //             .map(move |val| current_index + val);
 
-                return indices;
-            })
-            .collect::<Vec<u32>>();
+        //         current_index += m.vertices.len() as u32;
+
+        //         return indices;
+        //     })
+        //     .collect::<Vec<u32>>();
+
+        let indices = vec![ 0,1,2, 2,3,0 ];
 
         let vertex_buffer_state = BufferState::new(
             &self.device_state,
@@ -1469,7 +1468,7 @@ impl<B: hal::Backend> Renderer<B> {
             
             // Rendering
             let mut cmd_buffer = command_pool.allocate_one(hal::command::Level::Primary);
-            cmd_buffer.begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
+            cmd_buffer.begin_primary(CommandBufferFlags::SIMULTANEOUS_USE);
 
             cmd_buffer.set_viewports(0, &[self.viewport.clone()]);
             cmd_buffer.set_scissors(0, &[self.viewport.rect]);
@@ -1560,19 +1559,15 @@ impl<B: hal::Backend> Renderer<B> {
         self.last_drawables = Some(drawables);
     }
 
-    pub unsafe fn draw_frame(&mut self) {
-        let camera_transform = self.camera_transform.take().unwrap();
-
-        self.camera_transform = Some(camera_transform);
-
+    pub unsafe fn draw_frame(&mut self, camera_transform: &Transform) {
         if self.recreate_swapchain {
             self.recreate_swapchain();
             self.recreate_swapchain = false; 
         }
 
         let dims = [DIMS.width as f32, DIMS.height as f32];
-        
-        let new_ubo = self.update_camera_uniform_buffer_object(dims, self.camera_transform.as_ref().unwrap());
+
+        let new_ubo = self.update_camera_uniform_buffer_object(dims, camera_transform);
         self.camera_uniform.buffer.as_mut().unwrap().update_data(0, &[new_ubo]);
 
         let sem_index = self.framebuffer_state.next_acq_pre_pair_index();
@@ -1650,7 +1645,7 @@ impl<B: hal::Backend> Renderer<B> {
     }
 
     unsafe fn recreate_swapchain(&mut self) {
-        println!("recreating swapchain");
+        println!("\n\nrecreating swapchain\n\n");
 
         self.device_state.read().unwrap().device.wait_idle().unwrap();
 

@@ -82,26 +82,33 @@ use crate::primitives::drawable::Drawable;
 use crate::components::camera::Camera;
 use crate::timing::Time;
 use crate::systems::rotation::Rotation;
-use winit::event::{Event, WindowEvent};
-use winit::event_loop::ControlFlow;
 
 use crate::renderer::renderer::DIMS;
+use crate::events::event_handler::EventHandler;
 
 fn main() {
     env_logger::init();
 
-    let time = Arc::new(RwLock::new(Time::new()));
 
     let window_builder = winit::window::WindowBuilder::new()
         .with_title("matthew's fabulous rendering engine")
         .with_inner_size(winit::dpi::LogicalSize::new(DIMS.width as f64, DIMS.height as f64));
     let event_loop = winit::event_loop::EventLoop::new();
     let (backend_state, _instance) = create_backend(window_builder, &event_loop);
-    let mut renderer = unsafe { Renderer::new(backend_state) };
+    let renderer = unsafe { Renderer::new(backend_state) };
+    let event_handler = Arc::new(RwLock::new(EventHandler::new()));
 
+    start_engine(renderer, &event_handler);
 
-    
+    let handle_window_events = event_handler.write().unwrap().read_events_from_event_loop();
+    event_loop.run(handle_window_events);
+}
+
+fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared: &Arc<RwLock<EventHandler>>) {
+    let event_handler = event_handler_shared.clone();
+
     std::thread::spawn(move || {
+        let time = Arc::new(RwLock::new(Time::new()));
         let mut world = World::new();
         world.register::<Transform>();
         world.register::<Mesh>();
@@ -148,8 +155,6 @@ fn main() {
             let drawables = (&entities, &transform_storage, &mesh_storage)
                 .join()
                 .map(|(ent, transform, mesh)| {
-                    // println!("Processing entity: {:?}", ent);
-
                     let mut drawable = Drawable::new(mesh.clone(), transform.clone());
 
                     match color_storage.get(ent) {
@@ -174,10 +179,14 @@ fn main() {
             dispatcher.dispatch(&world.res);
             world.maintain();
 
+            // todo move processing of window events into a scheduled tick outside of this loop
+            event_handler.write().unwrap().process_window_events();
+            event_handler.write().unwrap().handle_events(&world);
+
             // update frame timing
             time.write().unwrap().tick();
 
-            let _camera_storage = world.read_storage::<Camera>();
+            let camera_storage = world.read_storage::<Camera>();
             let transform_storage = world.read_storage::<Transform>();
             let mesh_storage = world.read_storage::<Mesh>();
 
@@ -187,18 +196,14 @@ fn main() {
                 .map(|(transform, _mesh)| transform.clone().to_ubo())
                 .collect();
 
+            let camera_transform = (&transform_storage, &camera_storage)
+                .join()
+                .map(|(transform, _cam)| transform.clone())
+                .next()
+                .unwrap();
+
             unsafe { renderer.map_object_uniform_data(uniform_data) }
-            unsafe { renderer.draw_frame() };
+            unsafe { renderer.draw_frame(&camera_transform) };
         }
     });
-
-    event_loop.run(move |event, _, control_flow| match event {
-        Event::UserEvent(event) => println!("user event: {:?}", event),
-        Event::WindowEvent {
-            event: WindowEvent::CloseRequested,
-            ..
-        } => *control_flow = ControlFlow::Exit,
-        _ => *control_flow = ControlFlow::Wait,
-    })
 }
-

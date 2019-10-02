@@ -25,6 +25,7 @@ void main() {
     frag_color = in_color;
     frag_tex_coord = in_tex_coord;
 
-    gl_Position = s_ubo.proj * s_ubo.view * d_ubo.model * vec4(in_position, 1.0);
+    // gl_Position = s_ubo.proj * s_ubo.view * d_ubo.model * vec4(in_position, 1.0);
+    gl_Position = vec4(in_position, 1.0);
 }
 

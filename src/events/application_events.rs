@@ -1,6 +1,8 @@
 #[derive(Clone)]
 pub enum ApplicationEvent {
-    KeyPress(KeyPress)
+    KeyPress(KeyPress),
+    MouseMotion { x: f64, y: f64 },
+    MouseScroll { delta: f64 },
 }
 
 #[derive(Clone)]
