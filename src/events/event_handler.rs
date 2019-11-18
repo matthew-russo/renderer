@@ -157,7 +157,8 @@ impl EventHandler {
                     WindowEvent::AxisMotion { .. } => vec![],
                     WindowEvent::Touch(_) => vec![],
                     WindowEvent::HiDpiFactorChanged(_) => vec![],
-                    WindowEvent::RedrawRequested => vec![]
+                    WindowEvent::RedrawRequested => vec![],
+                    WindowEvent::ModifiersChanged { modifiers: _ } => vec![],
                 }
             },
             Event::DeviceEvent { event, .. } => {
