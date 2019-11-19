@@ -3,6 +3,7 @@ use std::fs::File;
 use std::sync::{Arc, RwLock};
 use std::io::{BufReader};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use glsl_to_spirv;
 
@@ -204,7 +205,7 @@ impl<B: hal::Backend> RenderPassState<B> {
 
         let subpass = hal::pass::SubpassDesc {
             colors: &[(0, hal::image::Layout::ColorAttachmentOptimal)],
-            depth_stencil: None, // Some(&(1, hal::image::Layout::DepthStencilAttachmentOptimal)),
+            depth_stencil: Some(&(1, hal::image::Layout::DepthStencilAttachmentOptimal)),
             inputs: &[],
             resolves: &[],
             preserves: &[],
@@ -218,7 +219,7 @@ impl<B: hal::Backend> RenderPassState<B> {
         };
 
         let render_pass = unsafe {
-            device.create_render_pass(&[color_attachment/*, depth_attachment*/], &[subpass], &[/*dependency*/])
+            device.create_render_pass(&[color_attachment, depth_attachment], &[subpass], &[dependency])
         }.expect("Can't create render pass");
     
         Self {
@@ -387,6 +388,12 @@ struct PipelineState<B: hal::Backend> {
     device_state: Arc<RwLock<DeviceState<B>>>
 }
 
+fn data_path(specific_file: &str) -> PathBuf {
+    let root_data = Path::new("src/data");
+    let specific_file_path = Path::new(specific_file);
+    return root_data.join(specific_file_path);
+}
+
 impl<B: hal::Backend> PipelineState<B> {
     unsafe fn new(
         device_state: &Arc<RwLock<DeviceState<B>>>,
@@ -406,14 +413,14 @@ impl<B: hal::Backend> PipelineState<B> {
             .expect("Can't create pipeline layout");
 
         let vs_module = {
-            let glsl = fs::read_to_string("/Users/matthewrusso/projects/rust/vulkan_rendering/src/data/shaders/standard.vert").unwrap();
+            let glsl = fs::read_to_string(data_path("shaders/standard.vert")).unwrap();
             let mut spirv_file = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Vertex).unwrap();
             let spirv = hal::pso::read_spirv(&mut spirv_file).unwrap();
             device.create_shader_module(&spirv[..]).unwrap()
         };
 
         let fs_module = {
-            let glsl = fs::read_to_string("/Users/matthewrusso/projects/rust/vulkan_rendering/src/data/shaders/standard.frag").unwrap();
+            let glsl = fs::read_to_string(data_path("shaders/standard.frag")).unwrap();
             let mut spirv_file = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Fragment).unwrap();
             let spirv = hal::pso::read_spirv(&mut spirv_file).unwrap();
             device.create_shader_module(&spirv[..]).unwrap()
@@ -492,14 +499,14 @@ impl<B: hal::Backend> PipelineState<B> {
                 },
             });
 
-            // pipeline_desc.depth_stencil = hal::pso::DepthStencilDesc {
-            //     depth: Some(hal::pso::DepthTest {
-            //         fun: hal::pso::Comparison::Less,
-            //         write: true
-            //     }),
-            //     depth_bounds: false,
-            //     stencil: Some(hal::pso::StencilTest::default())
-            // };
+            pipeline_desc.depth_stencil = hal::pso::DepthStencilDesc {
+                depth: Some(hal::pso::DepthTest {
+                    fun: hal::pso::Comparison::Less,
+                    write: true
+                }),
+                depth_bounds: false,
+                stencil: None,
+            };
 
             device.create_graphics_pipeline(&pipeline_desc, None)
         };
@@ -627,7 +634,7 @@ impl<B: hal::Backend> FramebufferState<B> {
                         .device
                         .create_framebuffer(
                             render_pass_state.render_pass.as_ref().unwrap(),
-                            vec![image_view, /*&depth_image_stuff.2*/],
+                            vec![image_view, &depth_image_stuff.2],
                             extent,
                         )
                         .unwrap()
