@@ -382,6 +382,12 @@ impl<B: hal::Backend> Uniform<B> {
     }
 }
 
+fn data_path(specific_file: &str) -> PathBuf {
+    let root_data = Path::new("src/data");
+    let specific_file_path = Path::new(specific_file);
+    return root_data.join(specific_file_path);
+}
+
 struct PipelineState<B: hal::Backend> {
     pipeline: Option<B::GraphicsPipeline>,
     pipeline_layout: Option<B::PipelineLayout>,
