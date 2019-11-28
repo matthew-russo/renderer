@@ -82,7 +82,9 @@ impl EventHandler {
         for event in self.application_events.drain(0..) {
             match event {
                 ApplicationEvent::KeyPress(key) => match key {
-                    KeyPress::EscKey => {},
+                    KeyPress::EscKey => {
+
+                    },
                     KeyPress::W => {
                         for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
                             transform.translate(Vector3::new(0.0, 0.0, 1.0));

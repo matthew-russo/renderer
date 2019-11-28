@@ -130,7 +130,7 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
             .build();
 
         let mut rng = rand::thread_rng();
-        for _i in 0..16 {
+        for _i in 0..64 {
             let (mut transform, mesh) = Cube::new();
             let x = rng.gen_range(-15.0, 15.0);
             let y = rng.gen_range(-15.0, 15.0);
@@ -192,10 +192,10 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
             let mesh_storage = world.read_storage::<Mesh>();
 
             // TODO -> get rid of clones? probably expensive? need to profile
-            // let uniform_data = (&transform_storage, &mesh_storage)
-            //     .join()
-            //     .map(|(transform, _mesh)| transform.clone().to_ubo())
-            //     .collect();
+            let uniform_data = (&transform_storage, &mesh_storage)
+                .join()
+                .map(|(transform, _mesh)| transform.clone().to_ubo())
+                .collect();
 
             let camera_transform = (&transform_storage, &camera_storage)
                 .join()
@@ -203,8 +203,8 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                 .next()
                 .unwrap();
 
-            // unsafe { renderer.map_object_uniform_data(uniform_data) }
-            unsafe { renderer.draw_frame(/* &camera_transform */) };
+            unsafe { renderer.map_object_uniform_data(uniform_data) }
+            unsafe { renderer.draw_frame(&camera_transform) };
         }
     });
 }
