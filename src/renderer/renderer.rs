@@ -394,12 +394,6 @@ struct PipelineState<B: hal::Backend> {
     device_state: Arc<RwLock<DeviceState<B>>>
 }
 
-fn data_path(specific_file: &str) -> PathBuf {
-    let root_data = Path::new("src/data");
-    let specific_file_path = Path::new(specific_file);
-    return root_data.join(specific_file_path);
-}
-
 impl<B: hal::Backend> PipelineState<B> {
     unsafe fn new(
         device_state: &Arc<RwLock<DeviceState<B>>>,
