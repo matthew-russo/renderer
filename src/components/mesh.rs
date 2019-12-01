@@ -1,6 +1,14 @@
 use crate::primitives::vertex::Vertex;
-use specs::Component;
-use specs::VecStorage;
+
+use legion::EntitySource;
+use legion::EntityAllocator;
+use legion::storage::Chunk;
+use legion::storage::ChunkBuilder;
+use legion::storage::Archetype;
+
+use std::collections::HashSet;
+use std::hash::BuildHasherDefault;
+use std::any::TypeId;
 
 #[derive(Clone, Debug)]
 pub struct Mesh {
@@ -8,8 +16,4 @@ pub struct Mesh {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     pub rendered: bool,
-}
-
-impl Component for Mesh {
-    type Storage = VecStorage<Self>;
 }

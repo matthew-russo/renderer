@@ -41,7 +41,7 @@ extern crate glsl_to_spirv;
 
 extern crate winit;
 extern crate image;
-extern crate specs;
+extern crate legion;
 extern crate cgmath;
 extern crate uuid;
 
@@ -61,13 +61,6 @@ use std::sync::{
     RwLock
 };
 
-use specs::{
-    prelude::*,
-    world::Builder,
-    World,
-    DispatcherBuilder
-};
-
 use rand::Rng;
 
 use cgmath::Vector3;
@@ -85,7 +78,9 @@ use crate::systems::rotation::Rotation;
 
 use crate::renderer::renderer::DIMS;
 use crate::events::event_handler::EventHandler;
-use std::io::Read;
+
+use legion::Universe;
+use legion::query::{Read, IntoQuery, Query};
 
 fn main() {
     env_logger::init();
@@ -110,25 +105,19 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
 
     std::thread::spawn(move || {
         let time = Arc::new(RwLock::new(Time::new()));
-        let mut world = World::new();
-        world.register::<Transform>();
-        world.register::<Mesh>();
-        world.register::<Camera>();
-        world.register::<Texture>();
-        world.register::<Color>();
+        let rotation_system = Rotation::new(&time);
 
-        let mut dispatcher = DispatcherBuilder::new()
-            .with(Rotation { time: time.clone() }, "rotation", &[])
-            .build();
+        // Create a world to store our entities
+        // TODO -> create universe with logger
+        let universe = Universe::new(None);
+        let mut world = universe.create_world();
 
-        dispatcher.setup(&mut world.res);
+        world.insert_from(
+            (),
+            vec![(Transform::new(), Camera { displaying: true })],
+        );
 
-        world
-            .create_entity()
-            .with(Transform::new())
-            .with(Camera { displaying: true })
-            .build();
-
+        let mut objects = Vec::new();
         let mut rng = rand::thread_rng();
         for _i in 0..64 {
             let (mut transform, mesh) = Cube::new();
@@ -137,35 +126,25 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
             let z = rng.gen_range(-15.0, 15.0);
             transform.translate(Vector3::new(x, y, z));
 
-            world
-                .create_entity()
-                .with(transform)
-                .with(mesh)
-                .build();
+            objects.push((transform, mesh));
         }
+        world.insert_from(
+            (),
+            objects,
+        );
 
         unsafe {
-            world.maintain();
-
-            let entities = world.entities();
-            let transform_storage = world.read_storage::<Transform>();
-            let mesh_storage = world.read_storage::<Mesh>();
-            let color_storage = world.read_storage::<Color>();
-            let texture_storage = world.read_storage::<Texture>();
-
-            let drawables = (&entities, &transform_storage, &mesh_storage)
-                .join()
-                .map(|(ent, transform, mesh)| {
+            let drawables = <(Read<Transform>, Read<Mesh>)>::query()
+                .iter_entities(&world)
+                .map(|(entity, (transform, mesh))| {
                     let mut drawable = Drawable::new(mesh.clone(), transform.clone());
 
-                    match color_storage.get(ent) {
-                        Some(color) => { drawable.with_color(color.clone()); },
-                        _ => ()
+                    if let Some(color) = world.entity_data::<Color>(entity) {
+                        drawable.with_color(color.clone());
                     }
 
-                    match texture_storage.get(ent) {
-                        Some(texture) => { drawable.with_texture(texture.clone()); },
-                        _ => ()
+                    if let Some(texture) = world.entity_data::<Texture>(entity) {
+                        drawable.with_texture(texture.clone());
                     }
 
                     drawable
@@ -176,29 +155,23 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
         }
 
         loop {
-            // update the systems
-            dispatcher.dispatch(&world.res);
-            world.maintain();
-
             // todo move processing of window events into a scheduled tick outside of this loop
             event_handler.write().unwrap().process_window_events();
             event_handler.write().unwrap().handle_events(&world);
+            rotation_system.run(&world);
 
             // update frame timing
             time.write().unwrap().tick();
 
-            let camera_storage = world.read_storage::<Camera>();
-            let transform_storage = world.read_storage::<Transform>();
-            let mesh_storage = world.read_storage::<Mesh>();
-
-            // TODO -> get rid of clones? probably expensive? need to profile
-            let uniform_data = (&transform_storage, &mesh_storage)
-                .join()
-                .map(|(transform, _mesh)| transform.clone().to_ubo())
+            let uniform_data = <(Read<Transform>, Read<Mesh>)>::query()
+                .iter(&mut world)
+                .map(|(transform, _mesh)| {
+                    transform.clone().to_ubo()
+                })
                 .collect();
 
-            let camera_transform = (&transform_storage, &camera_storage)
-                .join()
+            let camera_transform = <(Read<Transform>, Read<Camera>)>::query()
+                .iter(&mut world)
                 .map(|(transform, _cam)| transform.clone())
                 .next()
                 .unwrap();

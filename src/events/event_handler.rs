@@ -14,11 +14,6 @@ use winit::event::{
     VirtualKeyCode,
 };
 
-use specs::{
-    World,
-    Join,
-};
-
 use crate::events::application_events::ApplicationEvent;
 use crate::events::application_events::KeyPress;
 use crate::primitives::two_d::widget::Widget;
@@ -26,6 +21,9 @@ use crate::components::camera::Camera;
 use crate::components::transform::Transform;
 
 use cgmath::Vector3;
+
+use legion::World;
+use legion::query::{Read, Write, IntoQuery, Query};
 
 // This struct takes all incoming window events and converts them to application events to be passed down to widgets
 pub struct EventHandler {
@@ -86,38 +84,38 @@ impl EventHandler {
 
                     },
                     KeyPress::W => {
-                        for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                        for (_camera, transform) in <(Read<Camera>, Write<Transform>)>::query().iter(world) {
                             transform.translate(Vector3::new(0.0, 0.0, 1.0));
                         }
                     },
                     KeyPress::A => {
-                        for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                        for (_camera, transform) in <(Read<Camera>, Write<Transform>)>::query().iter(world) {
                             transform.translate(Vector3::new(-1.0, 0.0, 0.0));
                         }
                     },
                     KeyPress::S => {
-                        for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                        for (_camera, transform) in <(Read<Camera>, Write<Transform>)>::query().iter(world) {
                             transform.translate(Vector3::new(0.0, 0.0, -1.0));
                         }
                     },
                     KeyPress::D => {
-                        for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                        for (_camera, transform) in <(Read<Camera>, Write<Transform>)>::query().iter(world) {
                             transform.translate(Vector3::new(1.0, 0.0, 0.0));
                         }
                     },
                     KeyPress::Space => {
-                        for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                        for (_camera, transform) in <(Read<Camera>, Write<Transform>)>::query().iter(world) {
                             transform.translate(Vector3::new(0.0, 1.0, 0.0));
                         }
                     },
                     KeyPress::LShift => {
-                        for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                        for (_camera, transform) in <(Read<Camera>, Write<Transform>)>::query().iter(world) {
                             transform.translate(Vector3::new(0.0, -1.0, 0.0));
                         }
                     },
                 },
                 ApplicationEvent::MouseMotion { x, y} => {
-                    for (_camera, transform) in (&world.read_storage::<Camera>(), &mut world.write_storage::<Transform>()).join() {
+                    for (_camera, transform) in <(Read<Camera>, Write<Transform>)>::query().iter(world) {
                         let x_diff = (x * -0.1) as f32;
                         let y_diff = (y * -0.1) as f32;
 
