@@ -71,6 +71,7 @@ use crate::components::transform::Transform;
 use crate::components::color::Color;
 use crate::components::texture::Texture;
 use crate::primitives::three_d::cube::Cube;
+use crate::primitives::two_d::quad::Quad;
 use crate::primitives::drawable::Drawable;
 use crate::components::camera::Camera;
 use crate::timing::Time;
@@ -84,7 +85,6 @@ use legion::query::{Read, IntoQuery, Query};
 
 fn main() {
     env_logger::init();
-
 
     let window_builder = winit::window::WindowBuilder::new()
         .with_title("matthew's fabulous rendering engine")
@@ -133,25 +133,36 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
             objects,
         );
 
+        world.insert_from(
+            (),
+            vec![(Quad::new("main_menu".to_string(), 0.5, 0.5, 0.5, 0.5, None), )],
+        );
+
+        let drawables = <(Read<Transform>, Read<Mesh>)>::query()
+            .iter_entities(&world)
+            .map(|(entity, (transform, mesh))| {
+                let mut drawable = Drawable::new(mesh.clone(), transform.clone());
+
+                if let Some(color) = world.entity_data::<Color>(entity) {
+                    drawable.with_color(color.clone());
+                }
+
+                if let Some(texture) = world.entity_data::<Texture>(entity) {
+                    drawable.with_texture(texture.clone());
+                }
+
+                drawable
+            })
+            .collect();
+
+        let root_quad = <(Read<Quad>)>::query()
+            .iter(&world)
+            .map(|quad| quad.clone() )
+            .nth(0)
+            .unwrap();
+
         unsafe {
-            let drawables = <(Read<Transform>, Read<Mesh>)>::query()
-                .iter_entities(&world)
-                .map(|(entity, (transform, mesh))| {
-                    let mut drawable = Drawable::new(mesh.clone(), transform.clone());
-
-                    if let Some(color) = world.entity_data::<Color>(entity) {
-                        drawable.with_color(color.clone());
-                    }
-
-                    if let Some(texture) = world.entity_data::<Texture>(entity) {
-                        drawable.with_texture(texture.clone());
-                    }
-
-                    drawable
-                })
-                .collect();
-
-            renderer.update_drawables(drawables);
+            renderer.update_drawables(drawables, &root_quad);
         }
 
         loop {

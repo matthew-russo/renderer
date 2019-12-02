@@ -17,6 +17,7 @@ use winit::event::{
 use crate::events::application_events::ApplicationEvent;
 use crate::events::application_events::KeyPress;
 use crate::primitives::two_d::widget::Widget;
+use crate::primitives::two_d::quad::Quad;
 use crate::components::camera::Camera;
 use crate::components::transform::Transform;
 
@@ -81,7 +82,9 @@ impl EventHandler {
             match event {
                 ApplicationEvent::KeyPress(key) => match key {
                     KeyPress::EscKey => {
-
+                        if let Some(menu) = <(Write<Quad>)>::query().iter(world).next() {
+                            menu.rendered = !menu.rendered;
+                        }
                     },
                     KeyPress::W => {
                         for (_camera, transform) in <(Read<Camera>, Write<Transform>)>::query().iter(world) {

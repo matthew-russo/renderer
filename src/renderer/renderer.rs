@@ -31,6 +31,7 @@ use cgmath::{
 
 use crate::primitives::vertex::Vertex;
 use crate::primitives::three_d::cube::Cube;
+use crate::primitives::two_d::quad::Quad;
 
 use crate::components::mesh::Mesh;
 use crate::primitives::uniform_buffer_object::{
@@ -224,7 +225,7 @@ impl<B: hal::Backend> RenderPassState<B> {
     
         Self {
             render_pass: Some(render_pass),
-            device_state: device_state.clone(),
+            device_state: Arc::clone(device_state),
         }
     }
 }
@@ -399,6 +400,8 @@ impl<B: hal::Backend> PipelineState<B> {
         device_state: &Arc<RwLock<DeviceState<B>>>,
         render_pass: &B::RenderPass,
         descriptor_set_layouts: Vec<&B::DescriptorSetLayout>,
+        vertex_shader: &str,
+        fragment_shader: &str
     ) -> Self {
         let device = &device_state
             .read()
@@ -413,14 +416,14 @@ impl<B: hal::Backend> PipelineState<B> {
             .expect("Can't create pipeline layout");
 
         let vs_module = {
-            let glsl = fs::read_to_string(data_path("shaders/standard.vert")).unwrap();
+            let glsl = fs::read_to_string(data_path(vertex_shader)).unwrap();
             let mut spirv_file = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Vertex).unwrap();
             let spirv = hal::pso::read_spirv(&mut spirv_file).unwrap();
             device.create_shader_module(&spirv[..]).unwrap()
         };
 
         let fs_module = {
-            let glsl = fs::read_to_string(data_path("shaders/standard.frag")).unwrap();
+            let glsl = fs::read_to_string(data_path(fragment_shader)).unwrap();
             let mut spirv_file = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Fragment).unwrap();
             let spirv = hal::pso::read_spirv(&mut spirv_file).unwrap();
             device.create_shader_module(&spirv[..]).unwrap()
@@ -1027,12 +1030,17 @@ pub struct Renderer<B: hal::Backend> {
     swapchain_state: SwapchainState<B>,
     render_pass_state: RenderPassState<B>,
     pipeline_state: PipelineState<B>,
+    ui_pipeline_state: PipelineState<B>,
     framebuffer_state: FramebufferState<B>,
-   
+
     image_desc_set_layout: Option<Arc<RwLock<DescSetLayout<B>>>>,
     image_states: HashMap<RenderKey, ImageState<B>>,
+
     vertex_buffer_state: Option<BufferState<B>>,
     index_buffer_state: Option<BufferState<B>>,
+    ui_vertex_buffer_state: Option<BufferState<B>>,
+    ui_index_buffer_state: Option<BufferState<B>>,
+
     camera_uniform: Uniform<B>,
     object_uniform: Uniform<B>,
 
@@ -1040,6 +1048,7 @@ pub struct Renderer<B: hal::Backend> {
     resize_dims: Extent2D,
 
     last_drawables: Option<Vec<Drawable>>,
+    last_root_quad: Option<Quad>,
 }
 
 impl<B: hal::Backend> Renderer<B> {
@@ -1221,8 +1230,18 @@ impl<B: hal::Backend> Renderer<B> {
                 camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
                 object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
                 // image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
-            ]
+            ],
+            "shaders/standard.vert",
+            "shaders/standard.frag",
         );
+        let ui_pipeline_state = PipelineState::new(
+            &device_state,
+            render_pass_state.render_pass.as_ref().unwrap(),
+            vec![],
+            "shaders/ui.vert",
+            "shaders/ui.frag",
+        );
+
         let viewport = Self::create_viewport(&swapchain_state);
 
         let resize_dims = Extent2D {
@@ -1240,18 +1259,22 @@ impl<B: hal::Backend> Renderer<B> {
             swapchain_state,
             render_pass_state,
             pipeline_state,
+            ui_pipeline_state,
             framebuffer_state,
 
             image_desc_set_layout: None,
             image_states: HashMap::new(),
             vertex_buffer_state: None,
             index_buffer_state: None,
+            ui_vertex_buffer_state: None,
+            ui_index_buffer_state: None,
             camera_uniform,
             object_uniform,
 
             recreate_swapchain: false,
             resize_dims,
             last_drawables: None,
+            last_root_quad: None,
         }
     }
 
@@ -1466,7 +1489,26 @@ impl<B: hal::Backend> Renderer<B> {
         self.index_buffer_state = Some(index_buffer_state);
     }
 
-    unsafe fn generate_cmd_buffers(&mut self , meshes_by_texture: HashMap<Option<Texture>, Vec<&Mesh>>) {
+    unsafe fn generate_ui_vertex_and_index_buffers(&mut self, root_quad: &Quad) {
+        let vertex_buffer_state = BufferState::new(
+            &self.device_state,
+            &root_quad.vertices(),
+            hal::buffer::Usage::VERTEX,
+            &self.backend_state.adapter_state.memory_types,
+        );
+
+        let index_buffer_state = BufferState::new(
+            &self.device_state,
+            &root_quad.indices(),
+            hal::buffer::Usage::INDEX,
+            &self.backend_state.adapter_state.memory_types,
+        );
+
+        self.ui_vertex_buffer_state = Some(vertex_buffer_state);
+        self.ui_index_buffer_state = Some(index_buffer_state);
+    }
+
+    unsafe fn generate_cmd_buffers(&mut self , meshes_by_texture: HashMap<Option<Texture>, Vec<&Mesh>> ) {
         let framebuffers = self.framebuffer_state
             .framebuffers
             .as_ref()
@@ -1495,8 +1537,8 @@ impl<B: hal::Backend> Renderer<B> {
 
             cmd_buffer.set_viewports(0, &[self.viewport.clone()]);
             cmd_buffer.set_scissors(0, &[self.viewport.rect]);
-            cmd_buffer.bind_graphics_pipeline(&self.pipeline_state.pipeline.as_ref().unwrap());
 
+            cmd_buffer.bind_graphics_pipeline(&self.pipeline_state.pipeline.as_ref().unwrap());
             cmd_buffer.bind_vertex_buffers(0, Some((self.vertex_buffer_state.as_ref().unwrap().get_buffer(), 0)));
             cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView {
                 buffer: self.index_buffer_state.as_ref().unwrap().get_buffer(),
@@ -1514,10 +1556,6 @@ impl<B: hal::Backend> Renderer<B> {
                 ],
                 SubpassContents::Inline
             );
-
-            let vertices_length = Cube::new().1.indices.len() as u32;
-            cmd_buffer.draw_indexed(0..vertices_length, 0, 0..1);
-
 
             let mut current_mesh_index = 0;
             let dynamic_stride = std::mem::size_of::<ObjectUniformBufferObject>() as u32;
@@ -1539,6 +1577,17 @@ impl<B: hal::Backend> Renderer<B> {
                 current_mesh_index += num_indices;
             }
 
+            cmd_buffer.bind_graphics_pipeline(&self.ui_pipeline_state.pipeline.as_ref().unwrap());
+            cmd_buffer.bind_vertex_buffers(0, Some((self.ui_vertex_buffer_state.as_ref().unwrap().get_buffer(), 0)));
+            cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView {
+                buffer: self.ui_index_buffer_state.as_ref().unwrap().get_buffer(),
+                offset: 0,
+                index_type: hal::IndexType::U32
+            });
+
+            let num_ui_indices = 6;
+            cmd_buffer.draw_indexed(0..(num_ui_indices), 0, 0..1);
+
             cmd_buffer.end_render_pass();
 
             cmd_buffer.finish();
@@ -1549,7 +1598,7 @@ impl<B: hal::Backend> Renderer<B> {
         self.framebuffer_state.command_buffers = Some(command_buffers);
     }
 
-    pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>) {
+    pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>, root_quad: &Quad) {
         self.map_object_uniform_data(
             drawables
                 .iter_mut()
@@ -1571,6 +1620,8 @@ impl<B: hal::Backend> Renderer<B> {
                 .collect::<Vec<&Mesh>>()
         );
 
+        self.generate_ui_vertex_and_index_buffers(root_quad);
+
         let meshes_by_texture = drawables
             .iter()
             .fold(HashMap::<Option<Texture>, Vec<&Mesh>>::new(), |mut map, drawable| {
@@ -1581,6 +1632,7 @@ impl<B: hal::Backend> Renderer<B> {
 
         self.generate_cmd_buffers(meshes_by_texture);
         self.last_drawables = Some(drawables);
+        self.last_root_quad = Some(root_quad.clone());
     }
 
     pub unsafe fn draw_frame(&mut self, camera_transform: &Transform) {
@@ -1716,11 +1768,26 @@ impl<B: hal::Backend> Renderer<B> {
                 self.object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
                 // self.image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
             ],
+            "shaders/standard.vert",
+            "shaders/standard.frag",
+        );
+
+        self.ui_pipeline_state = PipelineState::new(
+            &self.device_state,
+            self.render_pass_state.render_pass.as_ref().unwrap(),
+            vec![
+                self.camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
+                self.object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
+                // self.image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
+            ],
+            "shaders/ui.vert",
+            "shaders/ui.frag",
         );
 
         self.viewport = Self::create_viewport(&self.swapchain_state);
         let drawables = self.last_drawables.take().unwrap();
-        self.update_drawables(drawables);
+        let root_quad = self.last_root_quad.take().unwrap();
+        self.update_drawables(drawables, &root_quad);
     }
 }
 

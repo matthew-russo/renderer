@@ -21,8 +21,6 @@ impl Quad {
     pub fn new(key: String, top: f32, left: f32, bottom: f32, right: f32, parent: Option<&Quad>) -> Quad {
         let vertices = Self::calculate_absolute_vertices(top, left, bottom, right, parent);
 
-        println!("VERTICES: {:?}\n\n", &vertices);
-
         let indices = vec![
             0, 1, 2, 2, 3, 0
         ];
