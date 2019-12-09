@@ -70,10 +70,11 @@ use crate::components::mesh::Mesh;
 use crate::components::transform::Transform;
 use crate::components::color::Color;
 use crate::components::texture::Texture;
+use crate::components::camera::Camera;
+use crate::components::config::Config;
 use crate::primitives::three_d::cube::Cube;
 use crate::primitives::two_d::quad::Quad;
 use crate::primitives::drawable::Drawable;
-use crate::components::camera::Camera;
 use crate::timing::Time;
 use crate::systems::rotation::Rotation;
 
@@ -81,7 +82,7 @@ use crate::renderer::renderer::DIMS;
 use crate::events::event_handler::EventHandler;
 
 use legion::Universe;
-use legion::query::{Read, IntoQuery, Query};
+use legion::query::{Read, Write, IntoQuery, Query};
 
 fn main() {
     env_logger::init();
@@ -128,6 +129,7 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
 
             objects.push((transform, mesh));
         }
+
         world.insert_from(
             (),
             objects,
@@ -138,31 +140,38 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
             vec![(Quad::new("main_menu".to_string(), 0.5, 0.5, 0.5, 0.5, None), )],
         );
 
-        let drawables = <(Read<Transform>, Read<Mesh>)>::query()
-            .iter_entities(&world)
-            .map(|(entity, (transform, mesh))| {
-                let mut drawable = Drawable::new(mesh.clone(), transform.clone());
+        world.insert_from(
+            (),
+            vec![(Config::new() ,)],
+        );
 
-                if let Some(color) = world.entity_data::<Color>(entity) {
-                    drawable.with_color(color.clone());
-                }
+        {
+            let drawables = <(Read<Transform>, Read<Mesh>)>::query()
+                .iter_entities(&world)
+                .map(|(entity, (transform, mesh))| {
+                    let mut drawable = Drawable::new(mesh.clone(), transform.clone());
 
-                if let Some(texture) = world.entity_data::<Texture>(entity) {
-                    drawable.with_texture(texture.clone());
-                }
+                    if let Some(color) = world.entity_data::<Color>(entity) {
+                        drawable.with_color(color.clone());
+                    }
 
-                drawable
-            })
-            .collect();
+                    if let Some(texture) = world.entity_data::<Texture>(entity) {
+                        drawable.with_texture(texture.clone());
+                    }
 
-        let root_quad = <(Read<Quad>)>::query()
-            .iter(&world)
-            .map(|quad| quad.clone() )
-            .nth(0)
-            .unwrap();
+                    drawable
+                })
+                .collect();
 
-        unsafe {
-            renderer.update_drawables(drawables, &root_quad);
+            let root_quad = <(Read<Quad>)>::query()
+                .iter(&world)
+                .map(|quad| quad.clone())
+                .nth(0)
+                .unwrap();
+
+            unsafe {
+                renderer.update_drawables(drawables, &root_quad);
+            }
         }
 
         loop {
@@ -187,7 +196,45 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                 .next()
                 .unwrap();
 
-            unsafe { renderer.map_object_uniform_data(uniform_data) }
+            let mut need_to_update_config = false;
+            if <(Read<Config>)>::query().iter(&mut world).next().unwrap().should_record_commands {
+                let drawables = <(Read<Transform>, Read<Mesh>)>::query()
+                    .iter_entities(&world)
+                    .map(|(entity, (transform, mesh))| {
+                        let mut drawable = Drawable::new(mesh.clone(), transform.clone());
+
+                        if let Some(color) = world.entity_data::<Color>(entity) {
+                            drawable.with_color(color.clone());
+                        }
+
+                        if let Some(texture) = world.entity_data::<Texture>(entity) {
+                            drawable.with_texture(texture.clone());
+                        }
+
+                        drawable
+                    })
+                    .collect();
+
+                let root_quad = <(Read<Quad>)>::query()
+                    .iter(&world)
+                    .map(|quad| quad.clone())
+                    .nth(0)
+                    .unwrap();
+
+                unsafe { renderer.update_drawables(drawables, &root_quad) };
+                need_to_update_config = true;
+            }
+
+            if need_to_update_config {
+                let config = <(Write<Config>)>::query()
+                    .iter(&mut world)
+                    .next()
+                    .unwrap();
+
+                config.should_record_commands = false;
+            }
+
+            unsafe { renderer.map_object_uniform_data(uniform_data) };
             unsafe { renderer.draw_frame(&camera_transform) };
         }
     });

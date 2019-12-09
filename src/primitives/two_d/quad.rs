@@ -2,6 +2,7 @@ use std::hash::Hash;
 use std::hash::Hasher;
 
 use crate::primitives::vertex::Vertex;
+use crate::components::mesh::Mesh;
 
 const ABSOLUTE_LOWER_BOUND: f32 = -1.0;
 const ABSOLUTE_UPPER_BOUND: f32 = 1.0;
@@ -111,6 +112,21 @@ impl Quad {
             Vertex::new([upper_x, upper_y, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0]),
             Vertex::new([lower_x, upper_y, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0]),
         ]
+    }
+
+    pub fn meshes(&self) -> Vec<Mesh> {
+        let mut meshes = vec![
+            Mesh {
+                key: "i hope i dont need this right now".into(),
+                vertices: self.vertices.clone(),
+                indices: self.indices.clone(),
+                rendered: self.rendered,
+            }
+        ];
+
+        meshes.append(&mut self.children.iter().flat_map(|quad| quad.meshes()).collect());
+
+        meshes
     }
 
     pub fn vertices(&self) -> Vec<Vertex> {

@@ -1508,7 +1508,7 @@ impl<B: hal::Backend> Renderer<B> {
         self.ui_index_buffer_state = Some(index_buffer_state);
     }
 
-    unsafe fn generate_cmd_buffers(&mut self , meshes_by_texture: HashMap<Option<Texture>, Vec<&Mesh>> ) {
+    unsafe fn generate_cmd_buffers(&mut self , meshes_by_texture: HashMap<Option<Texture>, Vec<&Mesh>>, ui_meshes: Vec<Mesh>) {
         let framebuffers = self.framebuffer_state
             .framebuffers
             .as_ref()
@@ -1560,6 +1560,10 @@ impl<B: hal::Backend> Renderer<B> {
             let mut current_mesh_index = 0;
             let dynamic_stride = std::mem::size_of::<ObjectUniformBufferObject>() as u32;
             for (i, mesh) in meshes.iter().enumerate() {
+                if !mesh.rendered {
+                    continue;
+                }
+
                 let dynamic_offset = i as u32 * dynamic_stride;
 
                 cmd_buffer.bind_graphics_descriptor_sets(
@@ -1577,6 +1581,7 @@ impl<B: hal::Backend> Renderer<B> {
                 current_mesh_index += num_indices;
             }
 
+            // TODO -> this code is basically copied from above. i need to find a way to abstract this
             cmd_buffer.bind_graphics_pipeline(&self.ui_pipeline_state.pipeline.as_ref().unwrap());
             cmd_buffer.bind_vertex_buffers(0, Some((self.ui_vertex_buffer_state.as_ref().unwrap().get_buffer(), 0)));
             cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView {
@@ -1585,8 +1590,17 @@ impl<B: hal::Backend> Renderer<B> {
                 index_type: hal::IndexType::U32
             });
 
-            let num_ui_indices = 6;
-            cmd_buffer.draw_indexed(0..(num_ui_indices), 0, 0..1);
+            // TODO -> this code is basically copied from above. i need to find a way to abstract this
+            let mut current_ui_mesh_index = 0;
+            for (i, ui_mesh) in ui_meshes.iter().enumerate() {
+                if !ui_mesh.rendered {
+                    continue;
+                }
+
+                let num_ui_indices = ui_mesh.indices.len() as u32;
+                cmd_buffer.draw_indexed(current_ui_mesh_index..(current_ui_mesh_index + num_ui_indices), 0, 0..1);
+                current_ui_mesh_index += num_ui_indices;
+            }
 
             cmd_buffer.end_render_pass();
 
@@ -1630,7 +1644,7 @@ impl<B: hal::Backend> Renderer<B> {
                 map
             });
 
-        self.generate_cmd_buffers(meshes_by_texture);
+        self.generate_cmd_buffers(meshes_by_texture, root_quad.meshes());
         self.last_drawables = Some(drawables);
         self.last_root_quad = Some(root_quad.clone());
     }

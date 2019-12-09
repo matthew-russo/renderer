@@ -20,6 +20,7 @@ use crate::primitives::two_d::widget::Widget;
 use crate::primitives::two_d::quad::Quad;
 use crate::components::camera::Camera;
 use crate::components::transform::Transform;
+use crate::components::config::Config;
 
 use cgmath::Vector3;
 
@@ -84,6 +85,10 @@ impl EventHandler {
                     KeyPress::EscKey => {
                         if let Some(menu) = <(Write<Quad>)>::query().iter(world).next() {
                             menu.rendered = !menu.rendered;
+
+                            if let Some(config) = <(Write<Config>)>::query().iter(world).next() {
+                                config.should_record_commands = true;
+                            }
                         }
                     },
                     KeyPress::W => {
