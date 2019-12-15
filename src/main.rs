@@ -127,7 +127,20 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
             let z = rng.gen_range(-15.0, 15.0);
             transform.translate(Vector3::new(x, y, z));
 
-            objects.push((transform, mesh));
+            let i: u32 = rng.gen_range(0, 3);
+
+            let texture = Texture {
+                path: match i {
+                    0 => "textures/container.jpg".into(),
+                    1 => "textures/demo.jpg".into(),
+                    2 => "textures/wall.jpg".into(),
+                    _ => unreachable!()
+                }
+            };
+
+            println!("creating object with texture: {}", texture.path);
+
+            objects.push((transform, mesh, texture));
         }
 
         world.insert_from(

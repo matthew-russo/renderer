@@ -27,20 +27,3 @@ impl ObjectUniformBufferObject {
         }
     }
 }
-
-#[derive(Clone, Copy, Debug)]
-pub struct MyTempUniformBufferObject {
-    pub model: Matrix4<f32>,
-    pub view: Matrix4<f32>,
-    pub proj: Matrix4<f32>,
-}
-
-impl MyTempUniformBufferObject {
-    pub fn new(model: Matrix4<f32>, view: Matrix4<f32>, proj: Matrix4<f32>) -> Self {
-        Self {
-            model,
-            view,
-            proj,
-        }
-    }
-}

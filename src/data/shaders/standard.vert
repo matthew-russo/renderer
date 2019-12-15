@@ -1,12 +1,6 @@
 #version 450
 #extension GL_ARB_separate_shader_objects : enable
 
-// layout(set = 0, binding = 0) uniform UniformBufferObject {
-//     mat4 model;
-//     mat4 view;
-//     mat4 proj;
-// } ubo;
-
 layout(set = 0, binding = 0) uniform StaticUnfiorms {
     mat4 view;
     mat4 proj;
@@ -32,7 +26,5 @@ void main() {
     frag_tex_coord = in_tex_coord;
 
     gl_Position = s_ubo.proj * s_ubo.view * d_ubo.model * vec4(in_position, 1.0);
-    // gl_Position = vec4(in_position, 1.0);
-    // gl_Position = ubo.proj * ubo.view * ubo.model * vec4(in_position, 1.0);
 }
 

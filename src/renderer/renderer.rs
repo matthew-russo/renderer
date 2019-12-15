@@ -2,8 +2,10 @@ use std::fs;
 use std::fs::File;
 use std::sync::{Arc, RwLock};
 use std::io::{BufReader};
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use std::path::{Path, PathBuf};
+
+use itertools::Itertools;
 
 use glsl_to_spirv;
 
@@ -37,7 +39,6 @@ use crate::components::mesh::Mesh;
 use crate::primitives::uniform_buffer_object::{
     CameraUniformBufferObject,
     ObjectUniformBufferObject,
-    MyTempUniformBufferObject,
 };
 use crate::primitives::drawable::Drawable;
 use crate::components::transform::Transform;
@@ -759,7 +760,7 @@ impl<B: hal::Backend> ImageState<B> {
         command_pool: &mut B::CommandPool,
         img_path: &str,
     ) -> Self {
-        let img_file = File::open(img_path).unwrap();
+        let img_file = File::open(data_path(img_path)).unwrap();
         let img_reader = BufReader::new(img_file);
         let img = load_image(img_reader, image::JPEG)
             .unwrap()
@@ -1108,63 +1109,65 @@ impl<B: hal::Backend> Renderer<B> {
 
         let object_uniform_desc_set = Self::create_set(&object_uniform_desc_set_layout, &mut uniform_desc_pool);
 
-        //let mut image_desc_pool = device_state
-        //    .read()
-        //    .unwrap()
-        //    .device
-        //    .create_descriptor_pool(
-        //        2,
-        //        &[
-        //            hal::pso::DescriptorRangeDesc {
-        //                ty: hal::pso::DescriptorType::CombinedImageSampler,
-        //                count: 2
-        //            }
-        //        ],
-        //        hal::pso::DescriptorPoolCreateFlags::empty()
-        //    )
-        //    .expect("Can't create descriptor pool");
+        let mut image_desc_pool = device_state
+            .read()
+            .unwrap()
+            .device
+            .create_descriptor_pool(
+                10,
+                &[
+                    hal::pso::DescriptorRangeDesc {
+                        ty: hal::pso::DescriptorType::CombinedImageSampler,
+                        count: 10
+                    }
+                ],
+                hal::pso::DescriptorPoolCreateFlags::empty()
+            )
+            .expect("Can't create descriptor pool");
 
-        //let image_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
-        //    &device_state,
-        //    vec![hal::pso::DescriptorSetLayoutBinding {
-        //        binding: 0,
-        //        ty: hal::pso::DescriptorType::CombinedImageSampler,
-        //        count: 1,
-        //        stage_flags: ShaderStageFlags::FRAGMENT,
-        //        immutable_samplers: false
-        //    }]
-        //)));
+        let image_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
+            &device_state,
+            vec![hal::pso::DescriptorSetLayoutBinding {
+                binding: 0,
+                ty: hal::pso::DescriptorType::CombinedImageSampler,
+                count: 1,
+                stage_flags: ShaderStageFlags::FRAGMENT,
+                immutable_samplers: false
+            }]
+        )));
 
-        //let image_desc_set = Self::create_set(&image_desc_set_layout, &mut image_desc_pool);
-        //let mut staging_pool = device_state
-        //    .read()
-        //    .unwrap()
-        //    .device
-        //    .create_command_pool(
-        //        device_state
-        //            .read()
-        //            .unwrap()
-        //            .queue_group
-        //            .family,
-        //        hal::pool::CommandPoolCreateFlags::empty(),
-        //    )
-        //    .expect("Can't create staging command pool");
+        let image_desc_set = Self::create_set(&image_desc_set_layout, &mut image_desc_pool);
+        let mut staging_pool = device_state
+            .read()
+            .unwrap()
+            .device
+            .create_command_pool(
+                device_state
+                    .read()
+                    .unwrap()
+                    .queue_group
+                    .family,
+                hal::pool::CommandPoolCreateFlags::empty(),
+            )
+            .expect("Can't create staging command pool");
 
-        //let base_image_state = ImageState::new(
-        //    image_desc_set,
-        //    &device_state,
-        //    &backend_state.adapter_state,
-        //    hal::buffer::Usage::TRANSFER_SRC,
-        //    &mut staging_pool,
-        //    "/Users/matthewrusso/projects/rust/vulkan_rendering/src/data/textures/chalet.jpg"
-        //);
-        //device_state
-        //    .read()
-        //    .unwrap()
-        //    .device
-        //    .destroy_command_pool(staging_pool);
-        //let mut image_states = HashMap::new();
-        //image_states.insert(RenderKey::from(&None), base_image_state);
+        let base_image_state = ImageState::new(
+            image_desc_set,
+            &device_state,
+            &backend_state.adapter_state,
+            hal::buffer::Usage::TRANSFER_SRC,
+            &mut staging_pool,
+            "textures/chalet.jpg"
+        );
+
+        device_state
+            .read()
+            .unwrap()
+            .device
+            .destroy_command_pool(staging_pool);
+
+        let mut image_states = HashMap::new();
+        image_states.insert(RenderKey::from(&None), base_image_state);
 
         // TODO -> merge the camera transform and ubo initialization
 
@@ -1194,7 +1197,7 @@ impl<B: hal::Backend> Renderer<B> {
         );
 
         let object_uniform_buffer_object = ObjectUniformBufferObject::new(
-            Matrix4::identity()
+            Matrix4::identity(),
         );
         let object_uniform = Uniform::new(
             &device_state,
@@ -1229,7 +1232,7 @@ impl<B: hal::Backend> Renderer<B> {
             vec![
                 camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
                 object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
-                // image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
+                image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
             ],
             "shaders/standard.vert",
             "shaders/standard.frag",
@@ -1250,7 +1253,7 @@ impl<B: hal::Backend> Renderer<B> {
         };
         
         Self {
-            image_desc_pool: None,
+            image_desc_pool: Some(image_desc_pool),
             uniform_desc_pool: Some(uniform_desc_pool),
             viewport,
 
@@ -1262,8 +1265,8 @@ impl<B: hal::Backend> Renderer<B> {
             ui_pipeline_state,
             framebuffer_state,
 
-            image_desc_set_layout: None,
-            image_states: HashMap::new(),
+            image_desc_set_layout: Some(image_desc_set_layout),
+            image_states,
             vertex_buffer_state: None,
             index_buffer_state: None,
             ui_vertex_buffer_state: None,
@@ -1411,7 +1414,13 @@ impl<B: hal::Backend> Renderer<B> {
     }
 
     unsafe fn generate_image_states(&mut self, textures: Vec<&Texture>) {
-        if textures.is_empty() {
+        let new_textures: Vec<&Texture> = textures
+            .into_iter()
+            .filter(|t| !self.image_states.contains_key(&RenderKey::from(*t)))
+            .unique()
+            .collect();
+
+        if new_textures.is_empty() {
            return;
         }
 
@@ -1429,7 +1438,7 @@ impl<B: hal::Backend> Renderer<B> {
             )
             .expect("Can't create staging command pool");
 
-        for texture in textures.into_iter() {
+        for texture in new_textures.into_iter() {
             let image_desc_set = Self::create_set(self.image_desc_set_layout.as_ref().unwrap(), self.image_desc_pool.as_mut().unwrap());
             let image_state = ImageState::new(
                 image_desc_set,
@@ -1508,7 +1517,7 @@ impl<B: hal::Backend> Renderer<B> {
         self.ui_index_buffer_state = Some(index_buffer_state);
     }
 
-    unsafe fn generate_cmd_buffers(&mut self , meshes_by_texture: HashMap<Option<Texture>, Vec<&Mesh>>, ui_meshes: Vec<Mesh>) {
+    unsafe fn generate_cmd_buffers(&mut self , meshes_by_texture: BTreeMap<Option<Texture>, Vec<&Mesh>>, ui_meshes: Vec<Mesh>) {
         let framebuffers = self.framebuffer_state
             .framebuffers
             .as_ref()
@@ -1524,8 +1533,6 @@ impl<B: hal::Backend> Renderer<B> {
         // TODO -> assert all sizes are same and all options are "Some"
 
         let mut command_buffers: Vec<B::CommandBuffer> = Vec::new();
-
-        let meshes = meshes_by_texture.into_iter().map(|(_, v)| v).flat_map(|x| x).collect::<Vec<&Mesh>>();
 
         for current_buffer_index in 0..num_buffers {
             let framebuffer = &framebuffers[current_buffer_index];
@@ -1559,26 +1566,44 @@ impl<B: hal::Backend> Renderer<B> {
 
             let mut current_mesh_index = 0;
             let dynamic_stride = std::mem::size_of::<ObjectUniformBufferObject>() as u32;
-            for (i, mesh) in meshes.iter().enumerate() {
-                if !mesh.rendered {
-                    continue;
-                }
 
-                let dynamic_offset = i as u32 * dynamic_stride;
+            for (maybe_texture, meshes) in meshes_by_texture.iter() {
+                let texture_key = if let Some(texture) = maybe_texture {
+                    RenderKey::from(texture)
+                } else {
+                    RenderKey::from(&None)
+                };
+
+                let texture_image_state = self.image_states.get(&texture_key).unwrap();
 
                 cmd_buffer.bind_graphics_descriptor_sets(
                     &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
-                    0,
-                    vec![
-                        &self.camera_uniform.desc.as_ref().unwrap().descriptor_set,
-                        &self.object_uniform.desc.as_ref().unwrap().descriptor_set,
-                    ],
-                    &[dynamic_offset],
+                    2,
+                    vec![ &texture_image_state.desc_set.descriptor_set ],
+                    &[],
                 );
 
-                let num_indices = mesh.indices.len() as u32;
-                cmd_buffer.draw_indexed(current_mesh_index..(current_mesh_index + num_indices), 0, 0..1);
-                current_mesh_index += num_indices;
+                for (i, mesh) in meshes.iter().enumerate() {
+                    if !mesh.rendered {
+                        continue;
+                    }
+
+                    let dynamic_offset = i as u32 * dynamic_stride;
+
+                    cmd_buffer.bind_graphics_descriptor_sets(
+                        &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
+                        0,
+                        vec![
+                            &self.camera_uniform.desc.as_ref().unwrap().descriptor_set,
+                            &self.object_uniform.desc.as_ref().unwrap().descriptor_set,
+                        ],
+                        &[dynamic_offset],
+                    );
+
+                    let num_indices = mesh.indices.len() as u32;
+                    cmd_buffer.draw_indexed(current_mesh_index..(current_mesh_index + num_indices), 0, 0..1);
+                    current_mesh_index += num_indices;
+                }
             }
 
             // TODO -> this code is basically copied from above. i need to find a way to abstract this
@@ -1620,12 +1645,12 @@ impl<B: hal::Backend> Renderer<B> {
                 .collect::<Vec<ObjectUniformBufferObject>>()
         );
 
-        // self.generate_image_states(
-        //     drawables
-        //         .iter()
-        //         .filter(|d| d.texture.is_some())
-        //         .map(|d| d.texture.as_ref().unwrap())
-        //         .collect());
+        self.generate_image_states(
+            drawables
+                .iter()
+                .filter(|d| d.texture.is_some())
+                .map(|d| d.texture.as_ref().unwrap())
+                .collect());
 
         self.generate_vertex_and_index_buffers(
             drawables
@@ -1638,11 +1663,13 @@ impl<B: hal::Backend> Renderer<B> {
 
         let meshes_by_texture = drawables
             .iter()
-            .fold(HashMap::<Option<Texture>, Vec<&Mesh>>::new(), |mut map, drawable| {
+            .fold(BTreeMap::<Option<Texture>, Vec<&Mesh>>::new(), |mut map, drawable| {
                 let meshes_by_texture = map.entry(drawable.texture.clone()).or_insert(Vec::new());
                 meshes_by_texture.push(&drawable.mesh);
                 map
             });
+
+        println!("meshes by texture: {:?}", meshes_by_texture.iter().map(|(tex, meshes)| (tex.clone(), meshes.iter().map(|m| m.key.clone()).collect::<Vec<String>>())).collect::<Vec<(Option<Texture>, Vec<String>)>>());
 
         self.generate_cmd_buffers(meshes_by_texture, root_quad.meshes());
         self.last_drawables = Some(drawables);
@@ -1780,7 +1807,7 @@ impl<B: hal::Backend> Renderer<B> {
             vec![
                 self.camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
                 self.object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
-                // self.image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
+                self.image_desc_set_layout.as_ref().unwrap().read().unwrap().layout.as_ref().unwrap()
             ],
             "shaders/standard.vert",
             "shaders/standard.frag",
