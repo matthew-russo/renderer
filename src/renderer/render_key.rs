@@ -45,7 +45,6 @@ impl std::fmt::Display for ModuleName {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let to_print = match self {
             ModuleName::BackendRenderer => "backend_renderer".to_string(),
-            _ => panic!("unknown resource type"),
         };
 
         write!(f, "{}", to_print)
@@ -61,7 +60,6 @@ impl std::fmt::Display for ResourceType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let to_print = match self {
             ResourceType::Texture(path) => format!("texture-{}", path),
-            _ => panic!("unknown resource type"),
         };
 
         write!(f, "{}", to_print)

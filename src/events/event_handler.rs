@@ -1,11 +1,10 @@
-use std::sync::{Arc, RwLock, Mutex};
+use std::sync::{Arc, Mutex};
 
 use winit::event_loop::{ControlFlow, EventLoopWindowTarget};
 use winit::event::{
     Event,
     WindowEvent,
     DeviceEvent,
-    ModifiersState,
     ElementState,
     MouseButton,
     TouchPhase,
@@ -29,8 +28,6 @@ use legion::query::{Read, Write, IntoQuery, Query};
 
 // This struct takes all incoming window events and converts them to application events to be passed down to widgets
 pub struct EventHandler {
-    window_events: Arc<RwLock<Vec<Event<()>>>>,
-
     // todo -> not make this pub
     pub application_events: Vec<ApplicationEvent>,
 
@@ -40,53 +37,38 @@ pub struct EventHandler {
 impl EventHandler {
     pub fn new() -> EventHandler {
         EventHandler {
-            window_events: Arc::new(RwLock::new(vec![])),
             application_events: vec![],
             prev_mouse_position: (0.0, 0.0)
         }
     }
 
-    pub fn read_events_from_event_loop(&mut self)
-        -> impl FnMut(Event<()>, &EventLoopWindowTarget<()>, &mut ControlFlow) {
+    // pub fn read_events_from_event_loop(&mut self)
+    //     -> impl FnMut(Event<()>, &EventLoopWindowTarget<()>, &mut ControlFlow) {
+    //     return move |event, _, control_flow| {
+    //         match event {
+    //             Event::WindowEvent {
+    //                 event: WindowEvent::CloseRequested,
+    //                 ..
+    //             } => *control_flow = ControlFlow::Exit,
+    //             _ => {
+    //                 *control_flow = ControlFlow::Wait;
+    //             },
+    //         }
 
-        let window_events = self.window_events.clone();
-
-        return move |event, _, control_flow| {
-            match event {
-                Event::WindowEvent {
-                    event: WindowEvent::CloseRequested,
-                    ..
-                } => *control_flow = ControlFlow::Exit,
-                _ => {
-                    window_events
-                        .write()
-                        .unwrap()
-                        .push(event.clone());
-                    *control_flow = ControlFlow::Wait;
-                },
-            }
-        }
-    }
-
-    pub fn process_window_events(&mut self) {
-        // todo - timing & proper queueing
-        self.application_events = self.window_events
-            .write()
-            .unwrap()
-            .drain(0..)
-            .flat_map(Self::transform_event)
-            .collect();
-    }
+    //         let mut new_events = Self::transform_event(event);
+    //         self.application_events.append(&mut new_events);
+    //     }
+    // }
 
     pub fn handle_events(&mut self, world: &World) {
         for event in self.application_events.drain(0..) {
             match event {
                 ApplicationEvent::KeyPress(key) => match key {
                     KeyPress::EscKey => {
-                        if let Some(menu) = <(Write<Quad>)>::query().iter(world).next() {
+                        if let Some(menu) = <Write<Quad>>::query().iter(world).next() {
                             menu.rendered = !menu.rendered;
 
-                            if let Some(config) = <(Write<Config>)>::query().iter(world).next() {
+                            if let Some(config) = <Write<Config>>::query().iter(world).next() {
                                 config.should_record_commands = true;
                             }
                         }
@@ -130,7 +112,7 @@ impl EventHandler {
                         transform.rotate(x_diff, y_diff, 0.0);
                     }
                 },
-                ApplicationEvent::MouseScroll { delta } => {
+                ApplicationEvent::MouseScroll { delta: _delta } => {
 
                 }
             }
@@ -142,7 +124,7 @@ impl EventHandler {
         false
     }
 
-    fn transform_event(window_event: Event<()>) -> Vec<ApplicationEvent> {
+    pub fn transform_event(window_event: Event<()>) -> Vec<ApplicationEvent> {
         return match window_event {
             Event::WindowEvent { event, .. } => {
                 match event {
@@ -159,14 +141,13 @@ impl EventHandler {
                     WindowEvent::CursorMoved { .. } => vec![],
                     WindowEvent::CursorEntered { .. } => vec![],
                     WindowEvent::CursorLeft { .. } => vec![],
-                    WindowEvent::MouseWheel { delta, phase, modifiers, .. } => Self::handle_mouse_scroll(delta, phase, modifiers),
-                    WindowEvent::MouseInput { state, button, modifiers, .. } => Self::handle_mouse_click(state, button, modifiers),
+                    WindowEvent::MouseWheel { delta, phase, .. } => Self::handle_mouse_scroll(delta, phase),
+                    WindowEvent::MouseInput { state, button, .. } => Self::handle_mouse_click(state, button),
                     WindowEvent::TouchpadPressure { .. } => vec![],
                     WindowEvent::AxisMotion { .. } => vec![],
                     WindowEvent::Touch(_) => vec![],
-                    WindowEvent::HiDpiFactorChanged(_) => vec![],
-                    WindowEvent::RedrawRequested => vec![],
-                    WindowEvent::ModifiersChanged { modifiers: _ } => vec![],
+                    WindowEvent::ScaleFactorChanged { scale_factor: _, new_inner_size: _ } => vec![],
+                    WindowEvent::ThemeChanged(_) => vec![]
                 }
             },
             Event::DeviceEvent { event, .. } => {
@@ -179,14 +160,17 @@ impl EventHandler {
                     DeviceEvent::Button { .. } => vec![],
                     DeviceEvent::Key(_) => vec![],
                     DeviceEvent::Text { .. } => vec![],
+                    DeviceEvent::ModifiersChanged(_) => vec![],
                 }
             },
             Event::Suspended => vec![],
             Event::UserEvent(_) => vec![],
             Event::NewEvents(_) => vec![],
-            Event::EventsCleared => vec![],
             Event::LoopDestroyed => vec![],
-            Event::Resumed => vec![]
+            Event::Resumed => vec![],
+            Event::MainEventsCleared => vec![],
+            Event::RedrawRequested(_) => vec![],
+            Event::RedrawEventsCleared => vec![],
         }
     }
 
@@ -226,7 +210,7 @@ impl EventHandler {
         }
     }
 
-    fn handle_mouse_scroll(delta: MouseScrollDelta, phase: TouchPhase, modifiers: ModifiersState) -> Vec<ApplicationEvent> {
+    fn handle_mouse_scroll(_delta: MouseScrollDelta, _phase: TouchPhase) -> Vec<ApplicationEvent> {
         // println!("\n");
         // println!("mouse scroll!");
         // println!("\tdelta: {:?}", delta);
@@ -237,7 +221,7 @@ impl EventHandler {
         vec![]
     }
 
-    fn handle_mouse_click(state: ElementState, button: MouseButton, modifiers: ModifiersState) -> Vec<ApplicationEvent> {
+    fn handle_mouse_click(_state: ElementState, _button: MouseButton) -> Vec<ApplicationEvent> {
         // println!("\n");
         // println!("mouse input!");
         // println!("\tstate {:?}", state);

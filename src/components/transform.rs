@@ -11,16 +11,6 @@ use cgmath::{
 
 use crate::primitives::uniform_buffer_object::ObjectUniformBufferObject;
 
-use legion::EntitySource;
-use legion::EntityAllocator;
-use legion::storage::Chunk;
-use legion::storage::ChunkBuilder;
-use legion::storage::Archetype;
-
-use std::collections::HashSet;
-use std::hash::BuildHasherDefault;
-use std::any::TypeId;
-
 const UP_VECTOR: Vector3<f32> = Vector3::new(0.0, 1.0, 0.0);
 
 #[derive(Clone, Copy, Debug, PartialEq)]

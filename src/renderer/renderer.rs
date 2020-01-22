@@ -32,8 +32,6 @@ use cgmath::{
 };
 
 use crate::primitives::vertex::Vertex;
-use crate::primitives::three_d::cube::Cube;
-use crate::primitives::two_d::quad::Quad;
 
 use crate::components::mesh::Mesh;
 use crate::primitives::uniform_buffer_object::{
@@ -44,6 +42,8 @@ use crate::primitives::drawable::Drawable;
 use crate::components::transform::Transform;
 use crate::components::texture::Texture;
 use crate::renderer::render_key::RenderKey;
+
+use crate::renderer::ui_draw_data::{UiDrawData, UiDrawCommand};
 
 pub(crate) const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 
@@ -95,6 +95,12 @@ pub struct BackendState<B: hal::Backend> {
     #[cfg(any(feature = "vulkan", feature = "dx11", feature = "dx12", feature = "metal"))]
     #[allow(dead_code)]
     window: winit::window::Window,
+}
+
+impl <B: hal::Backend> BackendState<B> {
+    pub fn window(&self) -> &winit::window::Window {
+        &self.window
+    }
 }
 
 #[cfg(not(any(feature="gl", feature="dx12", feature="vulkan", feature="metal")))]
@@ -1049,7 +1055,7 @@ pub struct Renderer<B: hal::Backend> {
     resize_dims: Extent2D,
 
     last_drawables: Option<Vec<Drawable>>,
-    last_root_quad: Option<Quad>,
+    last_ui_draw_data: Option<UiDrawData>,
 }
 
 impl<B: hal::Backend> Renderer<B> {
@@ -1277,8 +1283,12 @@ impl<B: hal::Backend> Renderer<B> {
             recreate_swapchain: false,
             resize_dims,
             last_drawables: None,
-            last_root_quad: None,
+            last_ui_draw_data: None,
         }
+    }
+
+    pub fn window(&self) -> &winit::window::Window {
+        self.backend_state.window()
     }
 
     fn create_viewport(swapchain_state: &SwapchainState<B>) -> hal::pso::Viewport {
@@ -1352,7 +1362,7 @@ impl<B: hal::Backend> Renderer<B> {
         let device_writable = &mut self.device_state.write().unwrap().device;
 
         // TODO -> Pass in the uniform that we need
-        let mut uniform_buffer = self
+        let uniform_buffer = self
             .object_uniform
             .buffer
             .as_mut()
@@ -1498,17 +1508,17 @@ impl<B: hal::Backend> Renderer<B> {
         self.index_buffer_state = Some(index_buffer_state);
     }
 
-    unsafe fn generate_ui_vertex_and_index_buffers(&mut self, root_quad: &Quad) {
+    unsafe fn generate_ui_vertex_and_index_buffers(&mut self, ui_draw_data: &UiDrawData) {
         let vertex_buffer_state = BufferState::new(
             &self.device_state,
-            &root_quad.vertices(),
+            &ui_draw_data.vertices,
             hal::buffer::Usage::VERTEX,
             &self.backend_state.adapter_state.memory_types,
         );
 
         let index_buffer_state = BufferState::new(
             &self.device_state,
-            &root_quad.indices(),
+            &ui_draw_data.indices,
             hal::buffer::Usage::INDEX,
             &self.backend_state.adapter_state.memory_types,
         );
@@ -1517,7 +1527,7 @@ impl<B: hal::Backend> Renderer<B> {
         self.ui_index_buffer_state = Some(index_buffer_state);
     }
 
-    unsafe fn generate_cmd_buffers(&mut self , meshes_by_texture: BTreeMap<Option<Texture>, Vec<&Mesh>>, ui_meshes: Vec<Mesh>) {
+    unsafe fn generate_cmd_buffers(&mut self , meshes_by_texture: BTreeMap<Option<Texture>, Vec<&Mesh>>, ui_draw_commands: &Vec<UiDrawCommand>) {
         let framebuffers = self.framebuffer_state
             .framebuffers
             .as_ref()
@@ -1568,12 +1578,7 @@ impl<B: hal::Backend> Renderer<B> {
             let dynamic_stride = std::mem::size_of::<ObjectUniformBufferObject>() as u32;
 
             for (maybe_texture, meshes) in meshes_by_texture.iter() {
-                let texture_key = if let Some(texture) = maybe_texture {
-                    RenderKey::from(texture)
-                } else {
-                    RenderKey::from(&None)
-                };
-
+                let texture_key = RenderKey::from(maybe_texture);
                 let texture_image_state = self.image_states.get(&texture_key).unwrap();
 
                 cmd_buffer.bind_graphics_descriptor_sets(
@@ -1615,20 +1620,23 @@ impl<B: hal::Backend> Renderer<B> {
                 index_type: hal::IndexType::U32
             });
 
-            // TODO -> this code is basically copied from above. i need to find a way to abstract this
-            let mut current_ui_mesh_index = 0;
-            for (i, ui_mesh) in ui_meshes.iter().enumerate() {
-                if !ui_mesh.rendered {
-                    continue;
-                }
+            for draw_command in ui_draw_commands.iter() {
+                // let texture_key = RenderKey::from(&draw_command.texture_id);
+                // let texture_image_state = self.image_states.get(&texture_key).unwrap();
 
-                let num_ui_indices = ui_mesh.indices.len() as u32;
-                cmd_buffer.draw_indexed(current_ui_mesh_index..(current_ui_mesh_index + num_ui_indices), 0, 0..1);
-                current_ui_mesh_index += num_ui_indices;
+                // cmd_buffer.bind_graphics_descriptor_sets(
+                //     &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
+                //     2,
+                //     vec![ &texture_image_state.desc_set.descriptor_set ],
+                //     &[],
+                // );
+
+                let start = draw_command.idx_offset;
+                let end = draw_command.idx_offset + draw_command.count;
+                cmd_buffer.draw_indexed(start..end, draw_command.vtx_offset as i32, 0..1);
             }
 
             cmd_buffer.end_render_pass();
-
             cmd_buffer.finish();
 
             command_buffers.push(cmd_buffer);
@@ -1637,7 +1645,7 @@ impl<B: hal::Backend> Renderer<B> {
         self.framebuffer_state.command_buffers = Some(command_buffers);
     }
 
-    pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>, root_quad: &Quad) {
+    pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>, ui_draw_data: &UiDrawData) {
         self.map_object_uniform_data(
             drawables
                 .iter_mut()
@@ -1659,7 +1667,7 @@ impl<B: hal::Backend> Renderer<B> {
                 .collect::<Vec<&Mesh>>()
         );
 
-        self.generate_ui_vertex_and_index_buffers(root_quad);
+        self.generate_ui_vertex_and_index_buffers(ui_draw_data);
 
         let meshes_by_texture = drawables
             .iter()
@@ -1671,9 +1679,9 @@ impl<B: hal::Backend> Renderer<B> {
 
         println!("meshes by texture: {:?}", meshes_by_texture.iter().map(|(tex, meshes)| (tex.clone(), meshes.iter().map(|m| m.key.clone()).collect::<Vec<String>>())).collect::<Vec<(Option<Texture>, Vec<String>)>>());
 
-        self.generate_cmd_buffers(meshes_by_texture, root_quad.meshes());
+        self.generate_cmd_buffers(meshes_by_texture, &ui_draw_data.commands);
         self.last_drawables = Some(drawables);
-        self.last_root_quad = Some(root_quad.clone());
+        self.last_ui_draw_data = Some(ui_draw_data.clone());
     }
 
     pub unsafe fn draw_frame(&mut self, camera_transform: &Transform) {
@@ -1827,8 +1835,8 @@ impl<B: hal::Backend> Renderer<B> {
 
         self.viewport = Self::create_viewport(&self.swapchain_state);
         let drawables = self.last_drawables.take().unwrap();
-        let root_quad = self.last_root_quad.take().unwrap();
-        self.update_drawables(drawables, &root_quad);
+        let ui_draw_data = self.last_ui_draw_data.take().unwrap();
+        self.update_drawables(drawables, &ui_draw_data);
     }
 }
 

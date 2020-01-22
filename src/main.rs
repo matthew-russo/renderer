@@ -73,7 +73,6 @@ use crate::components::texture::Texture;
 use crate::components::camera::Camera;
 use crate::components::config::Config;
 use crate::primitives::three_d::cube::Cube;
-use crate::primitives::two_d::quad::Quad;
 use crate::primitives::drawable::Drawable;
 use crate::timing::Time;
 use crate::systems::rotation::Rotation;
@@ -83,6 +82,9 @@ use crate::events::event_handler::EventHandler;
 
 use legion::Universe;
 use legion::query::{Read, Write, IntoQuery, Query};
+use crate::renderer::ui_draw_data::UiDrawData;
+use winit::event::{Event, WindowEvent};
+use winit::event_loop::ControlFlow;
 
 fn main() {
     env_logger::init();
@@ -97,8 +99,20 @@ fn main() {
 
     start_engine(renderer, &event_handler);
 
-    let handle_window_events = event_handler.write().unwrap().read_events_from_event_loop();
-    event_loop.run(handle_window_events);
+    event_loop.run(move |event, _, control_flow| {
+        match event {
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => *control_flow = ControlFlow::Exit,
+            _ => {
+                *control_flow = ControlFlow::Wait;
+            },
+        }
+
+        let mut new_events = EventHandler::transform_event(event);
+        event_handler.write().unwrap().application_events.append(&mut new_events);
+    });
 }
 
 fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared: &Arc<RwLock<EventHandler>>) {
@@ -150,13 +164,40 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
 
         world.insert_from(
             (),
-            vec![(Quad::new("main_menu".to_string(), 0.5, 0.5, 0.5, 0.5, None), )],
-        );
-
-        world.insert_from(
-            (),
             vec![(Config::new() ,)],
         );
+
+        let mut imgui = imgui::Context::create();
+        imgui.set_ini_filename(None);
+
+        let mut platform = imgui_winit_support::WinitPlatform::init(&mut imgui);
+        imgui.io_mut().font_global_scale = (1.0 / platform.hidpi_factor()) as f32;
+
+        platform.attach_window(imgui.io_mut(), renderer.window(), imgui_winit_support::HiDpiMode::Rounded);
+
+        platform.prepare_frame(imgui.io_mut(), renderer.window());
+        let mut ui = imgui.frame();
+
+        {
+            let ui_borrow = &mut ui;
+
+            imgui::Window::new(imgui::im_str!("my imgui window"))
+                .size([300.0, 100.0], imgui::Condition::FirstUseEver)
+                .build(ui_borrow, || {
+                    ui_borrow.text(imgui::im_str!("Hello world!"));
+                    ui_borrow.text(imgui::im_str!("This...is...imgui-rs!"));
+                    ui_borrow.separator();
+                    let mouse_pos = ui_borrow.io().mouse_pos;
+                    ui_borrow.text(format!(
+                        "Mouse Position: ({:.1},{:.1})",
+                        mouse_pos[0], mouse_pos[1]
+                    ));
+                });
+        }
+
+        platform.prepare_render(&ui, renderer.window());
+        let imgui_draw_data = ui.render();
+        let sxe_ui_draw_data = UiDrawData::from(imgui_draw_data);
 
         {
             let drawables = <(Read<Transform>, Read<Mesh>)>::query()
@@ -176,20 +217,12 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                 })
                 .collect();
 
-            let root_quad = <(Read<Quad>)>::query()
-                .iter(&world)
-                .map(|quad| quad.clone())
-                .nth(0)
-                .unwrap();
-
             unsafe {
-                renderer.update_drawables(drawables, &root_quad);
+                renderer.update_drawables(drawables, &sxe_ui_draw_data);
             }
         }
 
         loop {
-            // todo move processing of window events into a scheduled tick outside of this loop
-            event_handler.write().unwrap().process_window_events();
             event_handler.write().unwrap().handle_events(&world);
             rotation_system.run(&world);
 
@@ -210,7 +243,7 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                 .unwrap();
 
             let mut need_to_update_config = false;
-            if <(Read<Config>)>::query().iter(&mut world).next().unwrap().should_record_commands {
+            if <Read<Config>>::query().iter(&mut world).next().unwrap().should_record_commands {
                 let drawables = <(Read<Transform>, Read<Mesh>)>::query()
                     .iter_entities(&world)
                     .map(|(entity, (transform, mesh))| {
@@ -228,18 +261,12 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                     })
                     .collect();
 
-                let root_quad = <(Read<Quad>)>::query()
-                    .iter(&world)
-                    .map(|quad| quad.clone())
-                    .nth(0)
-                    .unwrap();
-
-                unsafe { renderer.update_drawables(drawables, &root_quad) };
+                unsafe { renderer.update_drawables(drawables, &sxe_ui_draw_data) };
                 need_to_update_config = true;
             }
 
             if need_to_update_config {
-                let config = <(Write<Config>)>::query()
+                let config = <Write<Config>>::query()
                     .iter(&mut world)
                     .next()
                     .unwrap();
