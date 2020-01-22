@@ -85,6 +85,7 @@ use legion::query::{Read, Write, IntoQuery, Query};
 use crate::renderer::ui_draw_data::UiDrawData;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::ControlFlow;
+use imgui::{FontSource, FontConfig, FontGlyphRanges};
 
 fn main() {
     env_logger::init();
@@ -171,7 +172,26 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
         imgui.set_ini_filename(None);
 
         let mut platform = imgui_winit_support::WinitPlatform::init(&mut imgui);
-        imgui.io_mut().font_global_scale = (1.0 / platform.hidpi_factor()) as f32;
+        let hidpi_factor = platform.hidpi_factor();
+        let font_size = (13.0 * hidpi_factor) as f32;
+        imgui.fonts().add_font(&[
+            FontSource::DefaultFontData {
+                config: Some(FontConfig {
+                    size_pixels: font_size,
+                    ..FontConfig::default()
+                }),
+            },
+            FontSource::TtfData {
+                data: include_bytes!("data/fonts/mplus-1p-regular.ttf"),
+                size_pixels: font_size,
+                config: Some(FontConfig {
+                    rasterizer_multiply: 1.75,
+                    glyph_ranges: FontGlyphRanges::japanese(),
+                    ..FontConfig::default()
+                }),
+            },
+        ]);
+        imgui.io_mut().font_global_scale = (1.0 / hidpi_factor) as f32;
 
         platform.attach_window(imgui.io_mut(), renderer.window(), imgui_winit_support::HiDpiMode::Rounded);
 
