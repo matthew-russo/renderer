@@ -193,6 +193,8 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
         ]);
         imgui.io_mut().font_global_scale = (1.0 / hidpi_factor) as f32;
 
+        renderer.upload_font_texture(&mut imgui.fonts());
+
         platform.attach_window(imgui.io_mut(), renderer.window(), imgui_winit_support::HiDpiMode::Rounded);
 
         platform.prepare_frame(imgui.io_mut(), renderer.window());

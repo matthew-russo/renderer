@@ -5,7 +5,7 @@ use std::io::{BufReader};
 use std::collections::{HashMap, BTreeMap};
 use std::path::{Path, PathBuf};
 
-use itertools::Itertools;
+use itertools::{Itertools};
 
 use glsl_to_spirv;
 
@@ -13,7 +13,7 @@ use hal::{Limits, Instance};
 use hal::adapter::{Adapter, MemoryType, PhysicalDevice};
 use hal::command::{CommandBuffer, CommandBufferFlags, ClearColor, ClearDepthStencil, ClearValue, SubpassContents};
 use hal::device::{Device};
-use hal::format::{Format, AsFormat, ChannelType, Rgba8Srgb, Swizzle, Aspects};
+use hal::format::{Format, AsFormat, ChannelType, Rgba8Srgb, Rgba32Sint, Swizzle, Aspects};
 use hal::pass::Subpass;
 use hal::pso::{DescriptorPool, PipelineStage, ShaderStageFlags, VertexInputRate, Viewport};
 use hal::pool::{CommandPool};
@@ -44,6 +44,7 @@ use crate::components::texture::Texture;
 use crate::renderer::render_key::RenderKey;
 
 use crate::renderer::ui_draw_data::{UiDrawData, UiDrawCommand};
+use imgui::{FontAtlas, FontAtlasTexture};
 
 pub(crate) const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 
@@ -52,6 +53,40 @@ const COLOR_RANGE: hal::image::SubresourceRange = hal::image::SubresourceRange {
     levels: 0..1,
     layers: 0..1,
 };
+
+fn load_image_data(img_path: &str, row_alignment_mask: u32) -> ImageData {
+    let img_file = File::open(data_path(img_path)).unwrap();
+    let img_reader = BufReader::new(img_file);
+    let img = load_image(img_reader, image::JPEG)
+        .unwrap()
+        .to_rgba();
+
+    let (width, height) = img.dimensions();
+
+    // TODO -> duplicated in ImageState::new
+    let image_stride = 4_usize;
+    let row_pitch = (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
+
+    let size = (width * height) as usize * image_stride;
+    let mut data: Vec<u8> = vec![0u8; size];
+
+    for y in 0..height as usize {
+        let row = &(*img)[y * (width as usize) * image_stride..(y+1) * (width as usize) * image_stride];
+        let start = y * row_pitch as usize;
+        let count = width as usize * image_stride;
+        let range = start..(start + count);
+        data.splice(range, row.iter().map(|x| *x));
+    }
+
+    let image_data = ImageData {
+        width,
+        height,
+        data,
+        format: Rgba8Srgb::SELF,
+    };
+
+    return image_data;
+}
 
 struct AdapterState<B: hal::Backend> {
     adapter: Option<Adapter<B>>,
@@ -536,7 +571,7 @@ impl<B: hal::Backend> PipelineState<B> {
 struct SwapchainState<B: hal::Backend> {
     swapchain: Option<B::Swapchain>,
     backbuffer: Option<Vec<B::Image>>,
-    format: Format,
+    format: hal::format::Format,
     extent: hal::image::Extent,
     device_state: Arc<RwLock<DeviceState<B>>>
 }
@@ -764,20 +799,13 @@ impl<B: hal::Backend> ImageState<B> {
         adapter_state: &AdapterState<B>,
         _usage: hal::buffer::Usage,
         command_pool: &mut B::CommandPool,
-        img_path: &str,
+        img_data: &ImageData,
     ) -> Self {
-        let img_file = File::open(data_path(img_path)).unwrap();
-        let img_reader = BufReader::new(img_file);
-        let img = load_image(img_reader, image::JPEG)
-            .unwrap()
-            .to_rgba();
-
-        let (width, height) = img.dimensions();
-        let kind = hal::image::Kind::D2(width as hal::image::Size, height as hal::image::Size, 1, 1);
+        let kind = hal::image::Kind::D2(img_data.width as hal::image::Size, img_data.height as hal::image::Size, 1, 1);
         let row_alignment_mask = adapter_state.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
         let image_stride = 4_usize;
-        let row_pitch = (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
-        let upload_size = (height * row_pitch) as u64;
+        let row_pitch = (img_data.width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
+        let upload_size = (img_data.height * row_pitch) as u64;
 
         let mut image_upload_buffer = device_state.read().unwrap().device.create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC).unwrap();
         let image_mem_reqs = device_state.read().unwrap().device.get_buffer_requirements(&image_upload_buffer);
@@ -799,12 +827,13 @@ impl<B: hal::Backend> ImageState<B> {
             device_state.read().unwrap().device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
             let mapping = device_state.read().unwrap().device.map_memory(&memory, 0..upload_size).unwrap();
 
-            for y in 0..height as usize {
-                let row = &(*img)[y * (width as usize) * image_stride..(y+1) * (width as usize) * image_stride];
+            // TODO -> duplicated in load_image_data
+            for y in 0..img_data.height as usize {
+                let row = &(*img_data.data)[y * (img_data.width as usize) * image_stride..(y+1) * (img_data.width as usize) * image_stride];
                 std::ptr::copy_nonoverlapping(
                     row.as_ptr(),
                     mapping.offset(y as isize * row_pitch as isize),
-                    width as usize * image_stride
+                    img_data.width as usize * image_stride
                 );
             }
 
@@ -815,7 +844,7 @@ impl<B: hal::Backend> ImageState<B> {
         let mut image = device_state.read().unwrap().device.create_image(
                 kind,
                 1,
-                Rgba8Srgb::SELF,
+                img_data.format,
                 hal::image::Tiling::Optimal,
                 hal::image::Usage::TRANSFER_DST | hal::image::Usage::SAMPLED,
                 hal::image::ViewCapabilities::empty(),
@@ -863,7 +892,7 @@ impl<B: hal::Backend> ImageState<B> {
             &[hal::command::BufferImageCopy {
                 buffer_offset: 0,
                 buffer_width: row_pitch / (image_stride as u32),
-                buffer_height: height as u32,
+                buffer_height: img_data.height as u32,
                 image_layers: hal::image::SubresourceLayers {
                     aspects: Aspects::COLOR,
                     level: 0,
@@ -871,8 +900,8 @@ impl<B: hal::Backend> ImageState<B> {
                 },
                 image_offset: hal::image::Offset { x: 0, y: 0, z: 0 },
                 image_extent: hal::image::Extent {
-                    width,
-                    height,
+                    width: img_data.width,
+                    height: img_data.height,
                     depth: 1,
                 },
             }],
@@ -914,7 +943,7 @@ impl<B: hal::Backend> ImageState<B> {
             .create_image_view(
                 &image,
                 hal::image::ViewKind::D2,
-                Rgba8Srgb::SELF,
+                img_data.format,
                 Swizzle::NO,
                 COLOR_RANGE.clone(),
             ).unwrap();
@@ -1027,9 +1056,17 @@ impl<B: hal::Backend> DescSetLayout<B> {
     }
 }
 
+struct ImageData {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+    pub format: hal::format::Format,
+}
+
 pub struct Renderer<B: hal::Backend> {
     image_desc_pool: Option<B::DescriptorPool>,
     uniform_desc_pool: Option<B::DescriptorPool>,
+    font_tex_desc_pool: Option<B::DescriptorPool>,
     viewport: Viewport,
 
     backend_state: BackendState<B>,
@@ -1042,6 +1079,9 @@ pub struct Renderer<B: hal::Backend> {
 
     image_desc_set_layout: Option<Arc<RwLock<DescSetLayout<B>>>>,
     image_states: HashMap<RenderKey, ImageState<B>>,
+
+    font_tex_desc_set_layout: Option<Arc<RwLock<DescSetLayout<B>>>>,
+    font_textures: HashMap<usize, ImageState<B>>,
 
     vertex_buffer_state: Option<BufferState<B>>,
     index_buffer_state: Option<BufferState<B>>,
@@ -1157,13 +1197,15 @@ impl<B: hal::Backend> Renderer<B> {
             )
             .expect("Can't create staging command pool");
 
+        let row_alignment_mask = backend_state.adapter_state.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
+        let image_data = load_image_data("textures/chalet.jpg", row_alignment_mask);
         let base_image_state = ImageState::new(
             image_desc_set,
             &device_state,
             &backend_state.adapter_state,
             hal::buffer::Usage::TRANSFER_SRC,
             &mut staging_pool,
-            "textures/chalet.jpg"
+            &image_data
         );
 
         device_state
@@ -1176,6 +1218,33 @@ impl<B: hal::Backend> Renderer<B> {
         image_states.insert(RenderKey::from(&None), base_image_state);
 
         // TODO -> merge the camera transform and ubo initialization
+
+        let mut font_tex_desc_pool = device_state
+            .read()
+            .unwrap()
+            .device
+            .create_descriptor_pool(
+                10,
+                &[
+                    hal::pso::DescriptorRangeDesc {
+                        ty: hal::pso::DescriptorType::CombinedImageSampler,
+                        count: 10
+                    }
+                ],
+                hal::pso::DescriptorPoolCreateFlags::empty()
+            )
+            .expect("Can't create descriptor pool");
+
+        let font_tex_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
+            &device_state,
+            vec![hal::pso::DescriptorSetLayoutBinding {
+                binding: 0,
+                ty: hal::pso::DescriptorType::CombinedImageSampler,
+                count: 1,
+                stage_flags: ShaderStageFlags::FRAGMENT,
+                immutable_samplers: false
+            }]
+        )));
 
         let my_temp_view = Matrix4::look_at(
             cgmath::Point3::new(5.0, 5.0, 5.0),
@@ -1261,6 +1330,7 @@ impl<B: hal::Backend> Renderer<B> {
         Self {
             image_desc_pool: Some(image_desc_pool),
             uniform_desc_pool: Some(uniform_desc_pool),
+            font_tex_desc_pool: Some(font_tex_desc_pool),
             viewport,
 
             backend_state,
@@ -1273,6 +1343,10 @@ impl<B: hal::Backend> Renderer<B> {
 
             image_desc_set_layout: Some(image_desc_set_layout),
             image_states,
+
+            font_tex_desc_set_layout: Some(font_tex_desc_set_layout),
+            font_textures: HashMap::new(),
+
             vertex_buffer_state: None,
             index_buffer_state: None,
             ui_vertex_buffer_state: None,
@@ -1289,6 +1363,10 @@ impl<B: hal::Backend> Renderer<B> {
 
     pub fn window(&self) -> &winit::window::Window {
         self.backend_state.window()
+    }
+
+    pub fn upload_font_texture(&mut self, font_atlas: &mut FontAtlas) {
+        unsafe { self.generate_font_texture(font_atlas); }
     }
 
     fn create_viewport(swapchain_state: &SwapchainState<B>) -> hal::pso::Viewport {
@@ -1423,6 +1501,49 @@ impl<B: hal::Backend> Renderer<B> {
         }
     }
 
+    // TODO -> make this and `generate_image_states` more generic
+    unsafe fn generate_font_texture(&mut self, font_atlas: &mut FontAtlas) {
+        let atlas_texture = font_atlas.build_rgba32_texture();
+        let mut staging_pool = self.device_state
+            .read()
+            .unwrap()
+            .device
+            .create_command_pool(
+                self.device_state
+                    .read()
+                    .unwrap()
+                    .queue_group
+                    .family,
+                hal::pool::CommandPoolCreateFlags::empty(),
+            )
+            .expect("Can't create staging command pool");
+
+        let font_tex_desc_set = Self::create_set(
+            self.font_tex_desc_set_layout.as_ref().unwrap(),
+            self.font_tex_desc_pool.as_mut().unwrap());
+        let font_text_image_data = ImageData {
+            width: atlas_texture.width,
+            height: atlas_texture.height,
+            data: atlas_texture.data.to_vec(),
+            format: Rgba32Sint::SELF,
+        };
+        let font_tex_state = ImageState::new(
+            font_tex_desc_set,
+            &self.device_state,
+            &self.backend_state.adapter_state,
+            hal::buffer::Usage::TRANSFER_SRC,
+            &mut staging_pool,
+            &font_text_image_data
+        );
+        self.font_textures.insert(font_atlas.tex_id.id(), font_tex_state);
+
+        self.device_state
+            .read()
+            .unwrap()
+            .device
+            .destroy_command_pool(staging_pool);
+    }
+
     unsafe fn generate_image_states(&mut self, textures: Vec<&Texture>) {
         let new_textures: Vec<&Texture> = textures
             .into_iter()
@@ -1450,13 +1571,15 @@ impl<B: hal::Backend> Renderer<B> {
 
         for texture in new_textures.into_iter() {
             let image_desc_set = Self::create_set(self.image_desc_set_layout.as_ref().unwrap(), self.image_desc_pool.as_mut().unwrap());
+            let row_alignment_mask = self.backend_state.adapter_state.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
+            let image_data = load_image_data(&texture.path, row_alignment_mask);
             let image_state = ImageState::new(
                 image_desc_set,
                 &self.device_state,
                 &self.backend_state.adapter_state,
                 hal::buffer::Usage::TRANSFER_SRC,
                 &mut staging_pool,
-                &texture.path
+                &image_data,
             );
             self.image_states.insert(RenderKey::from(texture), image_state);
         }
@@ -1621,15 +1744,18 @@ impl<B: hal::Backend> Renderer<B> {
             });
 
             for draw_command in ui_draw_commands.iter() {
-                // let texture_key = RenderKey::from(&draw_command.texture_id);
-                // let texture_image_state = self.image_states.get(&texture_key).unwrap();
+                println!("\n\n\nWE ACTUALLY HAVE UI DRAW COMMANDS\n\n\n");
 
-                // cmd_buffer.bind_graphics_descriptor_sets(
-                //     &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
-                //     2,
-                //     vec![ &texture_image_state.desc_set.descriptor_set ],
-                //     &[],
-                // );
+                let font_tex_image_state = self.font_textures
+                    .get(&draw_command.texture_id)
+                    .unwrap();
+
+                cmd_buffer.bind_graphics_descriptor_sets(
+                    &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
+                    2,
+                    vec![ &font_tex_image_state.desc_set.descriptor_set ],
+                    &[],
+                );
 
                 let start = draw_command.idx_offset;
                 let end = draw_command.idx_offset + draw_command.count;

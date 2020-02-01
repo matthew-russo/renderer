@@ -53,7 +53,7 @@ impl From<&imgui::DrawData> for UiDrawData {
 pub struct UiDrawCommand {
     pub count: u32,
     pub clip_rect: [f32; 4],
-    pub texture_id: Option<Texture>,
+    pub texture_id: usize,
     pub vtx_offset: u32,
     pub idx_offset: u32,
 }
@@ -69,7 +69,7 @@ impl From<(imgui::DrawCmd, (u32, u32))> for UiDrawCommand {
             Self {
                 count: count as u32,
                 clip_rect: cmd_params.clip_rect,
-                texture_id: None, //cmd_params.texture_id,
+                texture_id: cmd_params.texture_id.id(),
                 vtx_offset: cmd_params.vtx_offset as u32 + vertex_offset,
                 idx_offset: cmd_params.idx_offset as u32 + index_offset,
             }
