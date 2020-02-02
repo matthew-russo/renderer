@@ -1315,7 +1315,9 @@ impl<B: hal::Backend> Renderer<B> {
         let ui_pipeline_state = PipelineState::new(
             &device_state,
             render_pass_state.render_pass.as_ref().unwrap(),
-            vec![],
+            vec![
+                font_tex_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
+            ],
             "shaders/ui.vert",
             "shaders/ui.frag",
         );
@@ -1744,15 +1746,13 @@ impl<B: hal::Backend> Renderer<B> {
             });
 
             for draw_command in ui_draw_commands.iter() {
-                println!("\n\n\nWE ACTUALLY HAVE UI DRAW COMMANDS\n\n\n");
-
                 let font_tex_image_state = self.font_textures
                     .get(&draw_command.texture_id)
                     .unwrap();
 
                 cmd_buffer.bind_graphics_descriptor_sets(
-                    &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
-                    2,
+                    &self.ui_pipeline_state.pipeline_layout.as_ref().unwrap(),
+                    0,
                     vec![ &font_tex_image_state.desc_set.descriptor_set ],
                     &[],
                 );
@@ -1951,9 +1951,7 @@ impl<B: hal::Backend> Renderer<B> {
             &self.device_state,
             self.render_pass_state.render_pass.as_ref().unwrap(),
             vec![
-                self.camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
-                self.object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
-                // self.image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
+                self.font_tex_desc_set_layout.as_ref().unwrap().read().unwrap().layout.as_ref().unwrap()
             ],
             "shaders/ui.vert",
             "shaders/ui.frag",

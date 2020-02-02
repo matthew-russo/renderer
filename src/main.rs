@@ -207,6 +207,7 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                 .size([300.0, 100.0], imgui::Condition::FirstUseEver)
                 .build(ui_borrow, || {
                     ui_borrow.text(imgui::im_str!("Hello world!"));
+                    ui_borrow.text(imgui::im_str!("こんにちは世界！"));
                     ui_borrow.text(imgui::im_str!("This...is...imgui-rs!"));
                     ui_borrow.separator();
                     let mouse_pos = ui_borrow.io().mouse_pos;
