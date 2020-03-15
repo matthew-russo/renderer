@@ -82,10 +82,8 @@ use crate::events::event_handler::EventHandler;
 
 use legion::Universe;
 use legion::query::{Read, Write, IntoQuery, Query};
-use crate::renderer::ui_draw_data::UiDrawData;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::ControlFlow;
-use imgui::{FontSource, FontConfig, FontGlyphRanges};
 
 fn main() {
     env_logger::init();
@@ -168,65 +166,6 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
             vec![(Config::new() ,)],
         );
 
-        let mut imgui = imgui::Context::create();
-        imgui.set_ini_filename(None);
-
-        let mut platform = imgui_winit_support::WinitPlatform::init(&mut imgui);
-        let hidpi_factor = platform.hidpi_factor();
-        let font_size = (13.0 * hidpi_factor) as f32;
-        imgui.fonts().add_font(&[
-            FontSource::DefaultFontData {
-                config: Some(FontConfig {
-                    size_pixels: font_size,
-                    ..FontConfig::default()
-                }),
-            },
-            FontSource::TtfData {
-                data: include_bytes!("data/fonts/mplus-1p-regular.ttf"),
-                size_pixels: font_size,
-                config: Some(FontConfig {
-                    rasterizer_multiply: 1.75,
-                    glyph_ranges: FontGlyphRanges::japanese(),
-                    ..FontConfig::default()
-                }),
-            },
-        ]);
-        imgui.io_mut().font_global_scale = (1.0 / hidpi_factor) as f32;
-
-        renderer.upload_font_texture(&mut imgui.fonts());
-
-        platform.attach_window(imgui.io_mut(), renderer.window(), imgui_winit_support::HiDpiMode::Rounded);
-
-        platform.prepare_frame(imgui.io_mut(), renderer.window());
-        let mut ui = imgui.frame();
-
-        {
-            let ui_borrow = &mut ui;
-
-            imgui::Window::new(imgui::im_str!("my imgui window"))
-                .size([300.0, 100.0], imgui::Condition::FirstUseEver)
-                .build(ui_borrow, || {
-                    ui_borrow.text(imgui::im_str!("Hello world!"));
-                    ui_borrow.text(imgui::im_str!("こんにちは世界！"));
-                    ui_borrow.text(imgui::im_str!("This...is...imgui-rs!"));
-                    ui_borrow.separator();
-                    let mouse_pos = ui_borrow.io().mouse_pos;
-                    ui_borrow.text(format!(
-                        "Mouse Position: ({:.1},{:.1})",
-                        mouse_pos[0], mouse_pos[1]
-                    ));
-                });
-        }
-
-        platform.prepare_render(&ui, renderer.window());
-        let imgui_draw_data = ui.render();
-        let mut sxe_ui_draw_data = UiDrawData::from(imgui_draw_data);
-        sxe_ui_draw_data.normalize(1024, 768);
-
-        for vert in sxe_ui_draw_data.vertices.iter() {
-            println!("{:?}", vert.in_tex_coord);
-        }
-
         {
             let drawables = <(Read<Transform>, Read<Mesh>)>::query()
                 .iter_entities(&world)
@@ -246,7 +185,7 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                 .collect();
 
             unsafe {
-                renderer.update_drawables(drawables, &sxe_ui_draw_data);
+                renderer.update_drawables(drawables);
             }
         }
 
@@ -289,7 +228,7 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                     })
                     .collect();
 
-                unsafe { renderer.update_drawables(drawables, &sxe_ui_draw_data) };
+                unsafe { renderer.update_drawables(drawables) };
                 need_to_update_config = true;
             }
 

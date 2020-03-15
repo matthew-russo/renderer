@@ -13,7 +13,7 @@ use hal::{Limits, Instance};
 use hal::adapter::{Adapter, MemoryType, PhysicalDevice};
 use hal::command::{CommandBuffer, CommandBufferFlags, ClearColor, ClearDepthStencil, ClearValue, SubpassContents};
 use hal::device::{Device};
-use hal::format::{Format, AsFormat, ChannelType, Rgba8Sint, Rgba8Srgb, Rgba32Sint, Swizzle, Aspects};
+use hal::format::{Format, AsFormat, ChannelType, Rgba8Srgb, Swizzle, Aspects};
 use hal::pass::Subpass;
 use hal::pso::{DescriptorPool, PipelineStage, ShaderStageFlags, VertexInputRate, Viewport};
 use hal::pool::{CommandPool};
@@ -42,9 +42,6 @@ use crate::primitives::drawable::Drawable;
 use crate::components::transform::Transform;
 use crate::components::texture::Texture;
 use crate::renderer::render_key::RenderKey;
-
-use crate::renderer::ui_draw_data::{UiDrawData, UiDrawCommand};
-use imgui::{FontAtlas, FontAtlasTexture};
 
 pub(crate) const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 
@@ -1075,19 +1072,13 @@ pub struct Renderer<B: hal::Backend> {
     swapchain_state: SwapchainState<B>,
     render_pass_state: RenderPassState<B>,
     pipeline_state: PipelineState<B>,
-    ui_pipeline_state: PipelineState<B>,
     framebuffer_state: FramebufferState<B>,
 
     image_desc_set_layout: Option<Arc<RwLock<DescSetLayout<B>>>>,
     image_states: HashMap<RenderKey, ImageState<B>>,
 
-    font_tex_desc_set_layout: Option<Arc<RwLock<DescSetLayout<B>>>>,
-    font_textures: HashMap<usize, ImageState<B>>,
-
     vertex_buffer_state: Option<BufferState<B>>,
     index_buffer_state: Option<BufferState<B>>,
-    ui_vertex_buffer_state: Option<BufferState<B>>,
-    ui_index_buffer_state: Option<BufferState<B>>,
 
     camera_uniform: Uniform<B>,
     object_uniform: Uniform<B>,
@@ -1096,7 +1087,6 @@ pub struct Renderer<B: hal::Backend> {
     resize_dims: Extent2D,
 
     last_drawables: Option<Vec<Drawable>>,
-    last_ui_draw_data: Option<UiDrawData>,
 }
 
 impl<B: hal::Backend> Renderer<B> {
@@ -1342,35 +1332,24 @@ impl<B: hal::Backend> Renderer<B> {
             swapchain_state,
             render_pass_state,
             pipeline_state,
-            ui_pipeline_state,
             framebuffer_state,
 
             image_desc_set_layout: Some(image_desc_set_layout),
             image_states,
 
-            font_tex_desc_set_layout: Some(font_tex_desc_set_layout),
-            font_textures: HashMap::new(),
-
             vertex_buffer_state: None,
             index_buffer_state: None,
-            ui_vertex_buffer_state: None,
-            ui_index_buffer_state: None,
             camera_uniform,
             object_uniform,
 
             recreate_swapchain: false,
             resize_dims,
             last_drawables: None,
-            last_ui_draw_data: None,
         }
     }
 
     pub fn window(&self) -> &winit::window::Window {
         self.backend_state.window()
-    }
-
-    pub fn upload_font_texture(&mut self, font_atlas: &mut FontAtlas) {
-        unsafe { self.generate_font_texture(font_atlas); }
     }
 
     fn create_viewport(swapchain_state: &SwapchainState<B>) -> hal::pso::Viewport {
@@ -1505,54 +1484,6 @@ impl<B: hal::Backend> Renderer<B> {
         }
     }
 
-    // TODO -> make this and `generate_image_states` more generic
-    unsafe fn generate_font_texture(&mut self, font_atlas: &mut FontAtlas) {
-        let atlas_texture = font_atlas.build_rgba32_texture();
-        let mut staging_pool = self.device_state
-            .read()
-            .unwrap()
-            .device
-            .create_command_pool(
-                self.device_state
-                    .read()
-                    .unwrap()
-                    .queue_group
-                    .family,
-                hal::pool::CommandPoolCreateFlags::empty(),
-            )
-            .expect("Can't create staging command pool");
-
-        let font_tex_desc_set = Self::create_set(
-            self.font_tex_desc_set_layout.as_ref().unwrap(),
-            self.font_tex_desc_pool.as_mut().unwrap());
-
-        println!("width: {:?}, height: {:?}", atlas_texture.width, atlas_texture.height);
-
-        let font_text_image_data = ImageData {
-            width: atlas_texture.width,
-            height: atlas_texture.height,
-            data: atlas_texture.data.to_vec(),
-            format: Rgba8Srgb::SELF,
-        };
-        let font_tex_state = ImageState::new(
-            font_tex_desc_set,
-            &self.device_state,
-            &self.backend_state.adapter_state,
-            hal::buffer::Usage::TRANSFER_SRC,
-            &mut staging_pool,
-            &font_text_image_data,
-            &hal::image::SamplerDesc::new(hal::image::Filter::Linear, hal::image::WrapMode::Tile),
-        );
-        println!("font_atlas id: {:?}", font_atlas.tex_id.id());
-        self.font_textures.insert(font_atlas.tex_id.id(), font_tex_state);
-
-        self.device_state
-            .read()
-            .unwrap()
-            .device
-            .destroy_command_pool(staging_pool);
-    }
-
     unsafe fn generate_image_states(&mut self, textures: Vec<&Texture>) {
         let new_textures: Vec<&Texture> = textures
             .into_iter()
@@ -1641,26 +1572,7 @@ impl<B: hal::Backend> Renderer<B> {
         self.index_buffer_state = Some(index_buffer_state);
     }
 
-    unsafe fn generate_ui_vertex_and_index_buffers(&mut self, ui_draw_data: &UiDrawData) {
-        let vertex_buffer_state = BufferState::new(
-            &self.device_state,
-            &ui_draw_data.vertices,
-            hal::buffer::Usage::VERTEX,
-            &self.backend_state.adapter_state.memory_types,
-        );
-
-        let index_buffer_state = BufferState::new(
-            &self.device_state,
-            &ui_draw_data.indices,
-            hal::buffer::Usage::INDEX,
-            &self.backend_state.adapter_state.memory_types,
-        );
-
-        self.ui_vertex_buffer_state = Some(vertex_buffer_state);
-        self.ui_index_buffer_state = Some(index_buffer_state);
-    }
-
-    unsafe fn generate_cmd_buffers(&mut self , meshes_by_texture: BTreeMap<Option<Texture>, Vec<&Mesh>>, ui_draw_commands: &Vec<UiDrawCommand>) {
+    unsafe fn generate_cmd_buffers(&mut self , meshes_by_texture: BTreeMap<Option<Texture>, Vec<&Mesh>>) {
         let framebuffers = self.framebuffer_state
             .framebuffers
             .as_ref()
@@ -1744,34 +1656,6 @@ impl<B: hal::Backend> Renderer<B> {
                 }
             }
 
-            // TODO -> this code is basically copied from above. i need to find a way to abstract this
-            cmd_buffer.bind_graphics_pipeline(&self.ui_pipeline_state.pipeline.as_ref().unwrap());
-            cmd_buffer.bind_vertex_buffers(0, Some((self.ui_vertex_buffer_state.as_ref().unwrap().get_buffer(), 0)));
-            cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView {
-                buffer: self.ui_index_buffer_state.as_ref().unwrap().get_buffer(),
-                offset: 0,
-                index_type: hal::IndexType::U32
-            });
-
-            for draw_command in ui_draw_commands.iter() {
-                let font_tex_image_state = self.font_textures
-                    .get(&draw_command.texture_id)
-                    .unwrap();
-
-                println!("\n\ntexture_id: {:?}\n\n", draw_command.texture_id);
-
-                cmd_buffer.bind_graphics_descriptor_sets(
-                    &self.ui_pipeline_state.pipeline_layout.as_ref().unwrap(),
-                    0,
-                    vec![ &font_tex_image_state.desc_set.descriptor_set ],
-                    &[],
-                );
-
-                let start = draw_command.idx_offset;
-                let end = draw_command.idx_offset + draw_command.count;
-                cmd_buffer.draw_indexed(start..end, draw_command.vtx_offset as i32, 0..1);
-            }
-
             cmd_buffer.end_render_pass();
             cmd_buffer.finish();
 
@@ -1781,7 +1665,7 @@ impl<B: hal::Backend> Renderer<B> {
         self.framebuffer_state.command_buffers = Some(command_buffers);
     }
 
-    pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>, ui_draw_data: &UiDrawData) {
+    pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>) {
         self.map_object_uniform_data(
             drawables
                 .iter_mut()
@@ -1803,8 +1687,6 @@ impl<B: hal::Backend> Renderer<B> {
                 .collect::<Vec<&Mesh>>()
         );
 
-        self.generate_ui_vertex_and_index_buffers(ui_draw_data);
-
         let meshes_by_texture = drawables
             .iter()
             .fold(BTreeMap::<Option<Texture>, Vec<&Mesh>>::new(), |mut map, drawable| {
@@ -1815,9 +1697,8 @@ impl<B: hal::Backend> Renderer<B> {
 
         println!("meshes by texture: {:?}", meshes_by_texture.iter().map(|(tex, meshes)| (tex.clone(), meshes.iter().map(|m| m.key.clone()).collect::<Vec<String>>())).collect::<Vec<(Option<Texture>, Vec<String>)>>());
 
-        self.generate_cmd_buffers(meshes_by_texture, &ui_draw_data.commands);
+        self.generate_cmd_buffers(meshes_by_texture);
         self.last_drawables = Some(drawables);
-        self.last_ui_draw_data = Some(ui_draw_data.clone());
     }
 
     pub unsafe fn draw_frame(&mut self, camera_transform: &Transform) {
@@ -1957,20 +1838,9 @@ impl<B: hal::Backend> Renderer<B> {
             "shaders/standard.frag",
         );
 
-        self.ui_pipeline_state = PipelineState::new(
-            &self.device_state,
-            self.render_pass_state.render_pass.as_ref().unwrap(),
-            vec![
-                self.font_tex_desc_set_layout.as_ref().unwrap().read().unwrap().layout.as_ref().unwrap()
-            ],
-            "shaders/ui.vert",
-            "shaders/ui.frag",
-        );
-
         self.viewport = Self::create_viewport(&self.swapchain_state);
         let drawables = self.last_drawables.take().unwrap();
-        let ui_draw_data = self.last_ui_draw_data.take().unwrap();
-        self.update_drawables(drawables, &ui_draw_data);
+        self.update_drawables(drawables);
     }
 }
 
