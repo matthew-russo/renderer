@@ -13,7 +13,7 @@ use hal::{Limits, Instance};
 use hal::adapter::{Adapter, MemoryType, PhysicalDevice};
 use hal::command::{CommandBuffer, CommandBufferFlags, ClearColor, ClearDepthStencil, ClearValue, SubpassContents};
 use hal::device::{Device};
-use hal::format::{Format, AsFormat, ChannelType, Rgba8Srgb, Rgba32Sint, Swizzle, Aspects};
+use hal::format::{Format, AsFormat, ChannelType, Rgba8Sint, Rgba8Srgb, Rgba32Sint, Swizzle, Aspects};
 use hal::pass::Subpass;
 use hal::pso::{DescriptorPool, PipelineStage, ShaderStageFlags, VertexInputRate, Viewport};
 use hal::pool::{CommandPool};
@@ -800,6 +800,7 @@ impl<B: hal::Backend> ImageState<B> {
         _usage: hal::buffer::Usage,
         command_pool: &mut B::CommandPool,
         img_data: &ImageData,
+        sampler_desc: &hal::image::SamplerDesc,
     ) -> Self {
         let kind = hal::image::Kind::D2(img_data.width as hal::image::Size, img_data.height as hal::image::Size, 1, 1);
         let row_alignment_mask = adapter_state.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
@@ -949,7 +950,7 @@ impl<B: hal::Backend> ImageState<B> {
             ).unwrap();
 
         let sampler = device_state.read().unwrap().device
-            .create_sampler(&hal::image::SamplerDesc::new(hal::image::Filter::Linear, hal::image::WrapMode::Clamp))
+            .create_sampler(sampler_desc)
             .expect("Can't create sampler");
 
         desc_set.write(
@@ -1205,7 +1206,8 @@ impl<B: hal::Backend> Renderer<B> {
             &backend_state.adapter_state,
             hal::buffer::Usage::TRANSFER_SRC,
             &mut staging_pool,
-            &image_data
+            &image_data,
+            &hal::image::SamplerDesc::new(hal::image::Filter::Linear, hal::image::WrapMode::Clamp),
         );
 
         device_state
@@ -1523,11 +1525,14 @@ impl<B: hal::Backend> Renderer<B> {
         let font_tex_desc_set = Self::create_set(
             self.font_tex_desc_set_layout.as_ref().unwrap(),
             self.font_tex_desc_pool.as_mut().unwrap());
+
+        println!("width: {:?}, height: {:?}", atlas_texture.width, atlas_texture.height);
+
         let font_text_image_data = ImageData {
             width: atlas_texture.width,
             height: atlas_texture.height,
             data: atlas_texture.data.to_vec(),
-            format: Rgba32Sint::SELF,
+            format: Rgba8Srgb::SELF,
         };
         let font_tex_state = ImageState::new(
             font_tex_desc_set,
@@ -1535,8 +1540,10 @@ impl<B: hal::Backend> Renderer<B> {
             &self.backend_state.adapter_state,
             hal::buffer::Usage::TRANSFER_SRC,
             &mut staging_pool,
-            &font_text_image_data
+            &font_text_image_data,
+            &hal::image::SamplerDesc::new(hal::image::Filter::Linear, hal::image::WrapMode::Tile),
         );
+        println!("font_atlas id: {:?}", font_atlas.tex_id.id());
         self.font_textures.insert(font_atlas.tex_id.id(), font_tex_state);
 
         self.device_state
@@ -1582,6 +1589,7 @@ impl<B: hal::Backend> Renderer<B> {
                 hal::buffer::Usage::TRANSFER_SRC,
                 &mut staging_pool,
                 &image_data,
+                &hal::image::SamplerDesc::new(hal::image::Filter::Linear, hal::image::WrapMode::Clamp),
             );
             self.image_states.insert(RenderKey::from(texture), image_state);
         }
@@ -1749,6 +1757,8 @@ impl<B: hal::Backend> Renderer<B> {
                 let font_tex_image_state = self.font_textures
                     .get(&draw_command.texture_id)
                     .unwrap();
+
+                println!("\n\ntexture_id: {:?}\n\n", draw_command.texture_id);
 
                 cmd_buffer.bind_graphics_descriptor_sets(
                     &self.ui_pipeline_state.pipeline_layout.as_ref().unwrap(),

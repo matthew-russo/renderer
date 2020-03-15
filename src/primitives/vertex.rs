@@ -17,6 +17,17 @@ impl Vertex {
     pub fn y(&self) -> f32 {
         self.in_position[1]
     }
+
+    pub fn normalize(&mut self, width: u32, height: u32) {
+        let x = self.in_position[0];
+        let y = self.in_position[1];
+
+        let new_x = (x / width as f32) * 2.0 - 1.0;
+        let new_y = (y / height as f32) * 2.0 - 1.0;
+
+        self.in_position[0] = new_x;
+        self.in_position[1] = new_y;
+    }
 }
 
 impl From<&imgui::DrawVert> for Vertex {

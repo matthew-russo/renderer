@@ -220,7 +220,12 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
 
         platform.prepare_render(&ui, renderer.window());
         let imgui_draw_data = ui.render();
-        let sxe_ui_draw_data = UiDrawData::from(imgui_draw_data);
+        let mut sxe_ui_draw_data = UiDrawData::from(imgui_draw_data);
+        sxe_ui_draw_data.normalize(1024, 768);
+
+        for vert in sxe_ui_draw_data.vertices.iter() {
+            println!("{:?}", vert.in_tex_coord);
+        }
 
         {
             let drawables = <(Read<Transform>, Read<Mesh>)>::query()

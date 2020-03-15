@@ -8,6 +8,14 @@ pub struct UiDrawData {
     pub commands: Vec<UiDrawCommand>,
 }
 
+impl UiDrawData {
+    pub fn normalize(&mut self, width: u32, height: u32) {
+        self.vertices
+            .iter_mut()
+            .for_each(|v| v.normalize(width, height))
+    }
+}
+
 impl From<&imgui::DrawData> for UiDrawData {
     fn from(imgui_draw_data: &imgui::DrawData) -> Self {
         let mut indices = vec![];
