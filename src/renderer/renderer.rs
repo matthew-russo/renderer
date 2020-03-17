@@ -1108,11 +1108,21 @@ impl<B: hal::Backend> Renderer<B> {
                 2,
                 &[
                     hal::pso::DescriptorRangeDesc {
-                        ty: hal::pso::DescriptorType::UniformBuffer,
+                        ty: hal::pso::DescriptorType::Buffer {
+                            ty: hal::pso::BufferDescriptorType::Uniform,
+                            format: hal::pso::BufferDescriptorFormat::Structured {
+                                dynamic_offset: false,
+                            }
+                        },
                         count: 1
                     },
                     hal::pso::DescriptorRangeDesc {
-                        ty: hal::pso::DescriptorType::UniformBufferDynamic,
+                        ty: hal::pso::DescriptorType::Buffer {
+                            ty: hal::pso::BufferDescriptorType::Uniform,
+                            format: hal::pso::BufferDescriptorFormat::Structured {
+                                dynamic_offset: true,
+                            }
+                        },
                         count: 1
                     }
                 ],
@@ -1124,7 +1134,12 @@ impl<B: hal::Backend> Renderer<B> {
             &device_state,
             vec![hal::pso::DescriptorSetLayoutBinding {
                 binding: 0,
-                ty: hal::pso::DescriptorType::UniformBuffer,
+                ty: hal::pso::DescriptorType::Buffer {
+                    ty: hal::pso::BufferDescriptorType::Uniform,
+                    format: hal::pso::BufferDescriptorFormat::Structured {
+                        dynamic_offset: false,
+                    }
+                },
                 count: 1,
                 stage_flags: ShaderStageFlags::VERTEX,
                 immutable_samplers: false,
@@ -1137,7 +1152,12 @@ impl<B: hal::Backend> Renderer<B> {
             &device_state,
             vec![hal::pso::DescriptorSetLayoutBinding {
                 binding: 0,
-                ty: hal::pso::DescriptorType::UniformBufferDynamic,
+                ty: hal::pso::DescriptorType::Buffer {
+                    ty: hal::pso::BufferDescriptorType::Uniform,
+                    format: hal::pso::BufferDescriptorFormat::Structured {
+                        dynamic_offset: true,
+                    }
+                },
                 count: 1,
                 stage_flags: ShaderStageFlags::VERTEX,
                 immutable_samplers: false,
@@ -1154,7 +1174,7 @@ impl<B: hal::Backend> Renderer<B> {
                 10,
                 &[
                     hal::pso::DescriptorRangeDesc {
-                        ty: hal::pso::DescriptorType::CombinedImageSampler,
+                        ty: hal::pso::DescriptorType::Sampler,
                         count: 10
                     }
                 ],
@@ -1166,7 +1186,7 @@ impl<B: hal::Backend> Renderer<B> {
             &device_state,
             vec![hal::pso::DescriptorSetLayoutBinding {
                 binding: 0,
-                ty: hal::pso::DescriptorType::CombinedImageSampler,
+                ty: hal::pso::DescriptorType::Sampler,
                 count: 1,
                 stage_flags: ShaderStageFlags::FRAGMENT,
                 immutable_samplers: false
@@ -1219,7 +1239,7 @@ impl<B: hal::Backend> Renderer<B> {
                 10,
                 &[
                     hal::pso::DescriptorRangeDesc {
-                        ty: hal::pso::DescriptorType::CombinedImageSampler,
+                        ty: hal::pso::DescriptorType::Sampler,
                         count: 10
                     }
                 ],
@@ -1231,7 +1251,7 @@ impl<B: hal::Backend> Renderer<B> {
             &device_state,
             vec![hal::pso::DescriptorSetLayoutBinding {
                 binding: 0,
-                ty: hal::pso::DescriptorType::CombinedImageSampler,
+                ty: hal::pso::DescriptorType::Sampler,
                 count: 1,
                 stage_flags: ShaderStageFlags::FRAGMENT,
                 immutable_samplers: false
@@ -1303,15 +1323,6 @@ impl<B: hal::Backend> Renderer<B> {
             ],
             "shaders/standard.vert",
             "shaders/standard.frag",
-        );
-        let ui_pipeline_state = PipelineState::new(
-            &device_state,
-            render_pass_state.render_pass.as_ref().unwrap(),
-            vec![
-                font_tex_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
-            ],
-            "shaders/ui.vert",
-            "shaders/ui.frag",
         );
 
         let viewport = Self::create_viewport(&swapchain_state);
