@@ -84,6 +84,7 @@ use legion::Universe;
 use legion::query::{Read, Write, IntoQuery, Query};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::ControlFlow;
+use crate::primitives::uniform_buffer_object::ObjectUniformBufferObject;
 
 fn main() {
     env_logger::init();
@@ -196,7 +197,7 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
             // update frame timing
             time.write().unwrap().tick();
 
-            let uniform_data = <(Read<Transform>, Read<Mesh>)>::query()
+            let uniform_data: Vec<ObjectUniformBufferObject> = <(Read<Transform>, Read<Mesh>)>::query()
                 .iter(&mut world)
                 .map(|(transform, _mesh)| {
                     transform.clone().to_ubo()
@@ -241,7 +242,6 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                 config.should_record_commands = false;
             }
 
-            unsafe { renderer.map_object_uniform_data(uniform_data) };
             unsafe { renderer.draw_frame(&camera_transform) };
         }
     });

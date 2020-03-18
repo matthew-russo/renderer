@@ -274,6 +274,7 @@ struct BufferState<B: hal::Backend> {
     buffer_memory: Option<B::Memory>,
     memory_is_mapped: bool,
     size: u64,
+    padded_stride: u64,
     device_state: Arc<RwLock<DeviceState<B>>>,
 }
 
@@ -285,6 +286,7 @@ impl<B: hal::Backend> BufferState<B> {
     unsafe fn new<T: Sized>(
         device_state: &Arc<RwLock<DeviceState<B>>>,
         data_source: &[T],
+        alignment: u64,
         usage: hal::buffer::Usage,
         memory_types: &[MemoryType]
     ) -> Self
@@ -295,8 +297,16 @@ impl<B: hal::Backend> BufferState<B> {
         let mut buffer: B::Buffer;
         let size: u64;
 
-        let stride = std::mem::size_of::<T>() as u64;
-        let upload_size = data_source.len() as u64 * stride;
+        let data_stride = std::mem::size_of::<T>() as u64;
+        let padded_stride = if data_stride < alignment {
+            alignment
+        } else if data_stride % alignment == 0 {
+            data_stride
+        } else {
+            let multiple = data_stride / alignment;
+            alignment * (multiple + 1)
+        };
+        let upload_size = data_source.len() as u64 * padded_stride;
 
         {
             let device = &device_state.read().unwrap().device;
@@ -329,7 +339,7 @@ impl<B: hal::Backend> BufferState<B> {
 
                 let data_as_bytes = data_source
                     .iter()
-                    .flat_map(|ubo| any_as_u8_slice(ubo))
+                    .flat_map(|ubo| { any_as_u8_slice(ubo, padded_stride as usize) })
                     .collect::<Vec<u8>>();
                 std::ptr::copy_nonoverlapping(
                     data_as_bytes.as_ptr(),
@@ -345,8 +355,9 @@ impl<B: hal::Backend> BufferState<B> {
             buffer_memory: Some(memory),
             buffer: Some(buffer),
             memory_is_mapped: false,
-            device_state: device_state.clone(),
             size,
+            padded_stride,
+            device_state: device_state.clone(),
         }
     }
 
@@ -355,9 +366,7 @@ impl<B: hal::Backend> BufferState<B> {
               T: std::fmt::Debug
     {
         let device = &self.device_state.read().unwrap().device;
-
-        let stride = std::mem::size_of::<T>() as u64;
-        let upload_size = data_source.len() as u64 * stride;
+        let upload_size = data_source.len() as u64 * self.padded_stride;
 
         assert!(offset + upload_size <= self.size);
 
@@ -366,7 +375,7 @@ impl<B: hal::Backend> BufferState<B> {
 
             let data_as_bytes = data_source
                 .iter()
-                .flat_map(|ubo| any_as_u8_slice(ubo))
+                .flat_map(|ubo| any_as_u8_slice(ubo, self.padded_stride as usize))
                 .collect::<Vec<u8>>();
             std::ptr::copy_nonoverlapping(
                 data_as_bytes.as_ptr(),
@@ -386,8 +395,8 @@ struct Uniform<B: hal::Backend> {
 
 impl<B: hal::Backend> Uniform<B> {
     unsafe fn new<T>(
+        adapter_state: &AdapterState<B>,
         device_state: &Arc<RwLock<DeviceState<B>>>,
-        memory_types: &[MemoryType],
         data: &[T],
         desc: DescSet<B>,
         binding: u32
@@ -398,8 +407,9 @@ impl<B: hal::Backend> Uniform<B> {
         let buffer = BufferState::new(
             &device_state,
             &data,
+            adapter_state.limits.min_uniform_buffer_offset_alignment,
             hal::buffer::Usage::UNIFORM,
-            memory_types
+            &adapter_state.memory_types
         );
         let buffer = Some(buffer);
 
@@ -1276,8 +1286,8 @@ impl<B: hal::Backend> Renderer<B> {
             my_temp_proj
         );
         let camera_uniform = Uniform::new(
+            &backend_state.adapter_state,
             &device_state,
-            &backend_state.adapter_state.memory_types,
             &[camera_uniform_buffer_object],
             camera_uniform_desc_set,
             0
@@ -1287,8 +1297,8 @@ impl<B: hal::Backend> Renderer<B> {
             Matrix4::identity(),
         );
         let object_uniform = Uniform::new(
+            &backend_state.adapter_state,
             &device_state,
-            &backend_state.adapter_state.memory_types,
             &[object_uniform_buffer_object, object_uniform_buffer_object],
             object_uniform_desc_set,
             0
@@ -1429,60 +1439,60 @@ impl<B: hal::Backend> Renderer<B> {
         CameraUniformBufferObject::new(view, proj)
     }
 
-    // TODO -> change this to just map_uniform_data and pass in the uniform we're targeting
-    pub unsafe fn map_object_uniform_data(&mut self, uniform_data: Vec<ObjectUniformBufferObject>) {
-        let device_writable = &mut self.device_state.write().unwrap().device;
+    // // TODO -> change this to just map_uniform_data and pass in the uniform we're targeting
+    // pub unsafe fn map_object_uniform_data(&mut self, uniform_data: Vec<ObjectUniformBufferObject>) {
+    //     let device_writable = &mut self.device_state.write().unwrap().device;
 
-        // TODO -> Pass in the uniform that we need
-        let uniform_buffer = self
-            .object_uniform
-            .buffer
-            .as_mut()
-            .unwrap();
+    //     // TODO -> Pass in the uniform that we need
+    //     let uniform_buffer = self
+    //         .object_uniform
+    //         .buffer
+    //         .as_mut()
+    //         .unwrap();
 
-        let uniform_memory = uniform_buffer
-            .buffer_memory
-            .as_ref()
-            .unwrap();
+    //     let uniform_memory = uniform_buffer
+    //         .buffer_memory
+    //         .as_ref()
+    //         .unwrap();
 
-        if uniform_buffer.memory_is_mapped {
-            device_writable.unmap_memory(uniform_memory);
-            uniform_buffer.memory_is_mapped = false;
-        }
+    //     if uniform_buffer.memory_is_mapped {
+    //         device_writable.unmap_memory(uniform_memory);
+    //         uniform_buffer.memory_is_mapped = false;
+    //     }
 
-        match device_writable.map_memory(uniform_memory, 0..uniform_buffer.size) {
-            Ok(mem_ptr) => {
-                // if !coherent {
-                //     device.invalidate_mapped_memory_ranges(
-                //         Some((
-                //            buffer.memory(),
-                //            range.clone()
-                //         ))
-                //     );
-                // }
+    //     match device_writable.map_memory(uniform_memory, 0..uniform_buffer.size) {
+    //         Ok(mem_ptr) => {
+    //             // if !coherent {
+    //             //     device.invalidate_mapped_memory_ranges(
+    //             //         Some((
+    //             //            buffer.memory(),
+    //             //            range.clone()
+    //             //         ))
+    //             //     );
+    //             // }
 
-                let data_as_bytes = uniform_data
-                    .iter()
-                    .flat_map(|ubo| any_as_u8_slice(ubo))
-                    .collect::<Vec<u8>>();
+    //             let data_as_bytes = uniform_data
+    //                 .iter()
+    //                 .flat_map(|ubo| any_as_u8_slice(ubo, padded_stride))
+    //                 .collect::<Vec<u8>>();
 
-                let slice = std::slice::from_raw_parts_mut(mem_ptr, data_as_bytes.len());
-                slice.copy_from_slice(&data_as_bytes[..]);
-                
-                // if !coherent {
-                //     device.flush_mapped_memory_ranges(
-                //         Some((
-                //             buffer.memory(),
-                //             range
-                //         ))
-                //     );
-                // }
-            },
-            Err(e) => panic!("error mapping memory: {:?}", e),
-        }
+    //             let slice = std::slice::from_raw_parts_mut(mem_ptr, data_as_bytes.len());
+    //             slice.copy_from_slice(&data_as_bytes[..]);
+    //
+    //             // if !coherent {
+    //             //     device.flush_mapped_memory_ranges(
+    //             //         Some((
+    //             //             buffer.memory(),
+    //             //             range
+    //             //         ))
+    //             //     );
+    //             // }
+    //         },
+    //         Err(e) => panic!("error mapping memory: {:?}", e),
+    //     }
 
-        uniform_buffer.memory_is_mapped = true;
-    }
+    //     uniform_buffer.memory_is_mapped = true;
+    // }
 
     fn create_set(desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>, descriptor_pool: &mut B::DescriptorPool) -> DescSet<B> {
         let descriptor_set = unsafe {
@@ -1565,9 +1575,11 @@ impl<B: hal::Backend> Renderer<B> {
              })
              .collect::<Vec<u32>>();
 
+        let vertex_alignment = self.backend_state.adapter_state.limits.min_vertex_input_binding_stride_alignment;
         let vertex_buffer_state = BufferState::new(
             &self.device_state,
             &vertices,
+            vertex_alignment,
             hal::buffer::Usage::VERTEX,
             &self.backend_state.adapter_state.memory_types,
         );
@@ -1575,6 +1587,7 @@ impl<B: hal::Backend> Renderer<B> {
         let index_buffer_state = BufferState::new(
             &self.device_state,
             &indices,
+            1,
             hal::buffer::Usage::INDEX,
             &self.backend_state.adapter_state.memory_types,
         );
@@ -1658,7 +1671,7 @@ impl<B: hal::Backend> Renderer<B> {
                             &self.camera_uniform.desc.as_ref().unwrap().descriptor_set,
                             &self.object_uniform.desc.as_ref().unwrap().descriptor_set,
                         ],
-                        &[dynamic_offset],
+                        &[i as u32],
                     );
 
                     let num_indices = mesh.indices.len() as u32;
@@ -1677,12 +1690,16 @@ impl<B: hal::Backend> Renderer<B> {
     }
 
     pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>) {
-        self.map_object_uniform_data(
-            drawables
-                .iter_mut()
-                .map(|d| d.transform.to_ubo())
-                .collect::<Vec<ObjectUniformBufferObject>>()
-        );
+        let ubos = drawables
+            .iter()
+            .map(|d| d.transform.to_ubo())
+            .collect::<Vec<ObjectUniformBufferObject>>();
+
+        self.object_uniform
+            .buffer
+            .as_mut()
+            .unwrap()
+            .update_data(0, &ubos);
 
         self.generate_image_states(
             drawables
@@ -2050,9 +2067,13 @@ impl<B: hal::Backend> Drop for FramebufferState<B> {
     }
 }
 
-unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> Vec<u8> {
-    std::slice::from_raw_parts(
+unsafe fn any_as_u8_slice<T: Sized>(p: &T, pad_to_size: usize) -> Vec<u8> {
+    let mut vec = std::slice::from_raw_parts(
         (p as *const T) as *const u8,
         std::mem::size_of::<T>())
-        .to_vec()
+        .to_vec();
+
+    vec.resize(pad_to_size, 0);
+
+    vec
 }
