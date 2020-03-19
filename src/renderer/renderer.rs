@@ -974,7 +974,7 @@ impl<B: hal::Backend> ImageState<B> {
                     array_offset: 0,
                     descriptors: hal::pso::Descriptor::CombinedImageSampler(
                         &image_view,
-                        hal::image::Layout::Undefined,
+                        hal::image::Layout::ShaderReadOnlyOptimal,
                         &sampler
                     )
                 }
