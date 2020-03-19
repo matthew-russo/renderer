@@ -287,6 +287,7 @@ impl<B: hal::Backend> BufferState<B> {
         device_state: &Arc<RwLock<DeviceState<B>>>,
         data_source: &[T],
         alignment: u64,
+        min_size: u64,
         usage: hal::buffer::Usage,
         memory_types: &[MemoryType]
     ) -> Self
@@ -306,7 +307,11 @@ impl<B: hal::Backend> BufferState<B> {
             let multiple = data_stride / alignment;
             alignment * (multiple + 1)
         };
-        let upload_size = data_source.len() as u64 * padded_stride;
+        let mut upload_size = data_source.len() as u64 * padded_stride;
+
+        if upload_size < min_size {
+            upload_size = min_size;
+        }
 
         {
             let device = &device_state.read().unwrap().device;
@@ -408,6 +413,7 @@ impl<B: hal::Backend> Uniform<B> {
             &device_state,
             &data,
             adapter_state.limits.min_uniform_buffer_offset_alignment,
+            65536,
             hal::buffer::Usage::UNIFORM,
             &adapter_state.memory_types
         );
@@ -1184,7 +1190,11 @@ impl<B: hal::Backend> Renderer<B> {
                 10,
                 &[
                     hal::pso::DescriptorRangeDesc {
-                        ty: hal::pso::DescriptorType::Sampler,
+                        ty: hal::pso::DescriptorType::Image {
+                            ty: hal::pso::ImageDescriptorType::Sampled {
+                                with_sampler: true,
+                            }
+                        },
                         count: 10
                     }
                 ],
@@ -1196,7 +1206,11 @@ impl<B: hal::Backend> Renderer<B> {
             &device_state,
             vec![hal::pso::DescriptorSetLayoutBinding {
                 binding: 0,
-                ty: hal::pso::DescriptorType::Sampler,
+                ty: hal::pso::DescriptorType::Image {
+                    ty: hal::pso::ImageDescriptorType::Sampled {
+                        with_sampler: true,
+                    }
+                },
                 count: 1,
                 stage_flags: ShaderStageFlags::FRAGMENT,
                 immutable_samplers: false
@@ -1580,6 +1594,7 @@ impl<B: hal::Backend> Renderer<B> {
             &self.device_state,
             &vertices,
             vertex_alignment,
+            65536,
             hal::buffer::Usage::VERTEX,
             &self.backend_state.adapter_state.memory_types,
         );
@@ -1588,6 +1603,7 @@ impl<B: hal::Backend> Renderer<B> {
             &self.device_state,
             &indices,
             1,
+            65536,
             hal::buffer::Usage::INDEX,
             &self.backend_state.adapter_state.memory_types,
         );
@@ -1644,7 +1660,6 @@ impl<B: hal::Backend> Renderer<B> {
             );
 
             let mut current_mesh_index = 0;
-            let dynamic_stride = std::mem::size_of::<ObjectUniformBufferObject>() as u32;
 
             for (maybe_texture, meshes) in meshes_by_texture.iter() {
                 let texture_key = RenderKey::from(maybe_texture);
@@ -1662,7 +1677,7 @@ impl<B: hal::Backend> Renderer<B> {
                         continue;
                     }
 
-                    let dynamic_offset = i as u32 * dynamic_stride;
+                    let dynamic_offset = i as u64 * self.object_uniform.buffer.as_ref().unwrap().padded_stride;
 
                     cmd_buffer.bind_graphics_descriptor_sets(
                         &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
@@ -1671,7 +1686,7 @@ impl<B: hal::Backend> Renderer<B> {
                             &self.camera_uniform.desc.as_ref().unwrap().descriptor_set,
                             &self.object_uniform.desc.as_ref().unwrap().descriptor_set,
                         ],
-                        &[i as u32],
+                        &[dynamic_offset as u32],
                     );
 
                     let num_indices = mesh.indices.len() as u32;
