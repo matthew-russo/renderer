@@ -190,7 +190,11 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
             }
         }
 
+        let mut frame_count = 0;
         loop {
+            frame_count += 1;
+            println!("drawing frame: {:?}", frame_count);
+
             event_handler.write().unwrap().handle_events(&world);
             rotation_system.run(&world);
 
@@ -242,7 +246,9 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                 config.should_record_commands = false;
             }
 
+            unsafe { renderer.map_uniform_data(uniform_data) };
             unsafe { renderer.draw_frame(&camera_transform) };
+            println!("drew frame: {:?}", frame_count);
         }
     });
 }

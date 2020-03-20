@@ -1704,17 +1704,21 @@ impl<B: hal::Backend> Renderer<B> {
         self.framebuffer_state.command_buffers = Some(command_buffers);
     }
 
-    pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>) {
-        let ubos = drawables
-            .iter()
-            .map(|d| d.transform.to_ubo())
-            .collect::<Vec<ObjectUniformBufferObject>>();
-
+    pub unsafe fn map_uniform_data(&mut self, ubos: Vec<ObjectUniformBufferObject>) {
         self.object_uniform
             .buffer
             .as_mut()
             .unwrap()
             .update_data(0, &ubos);
+    }
+
+    pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>) {
+        let ubos = drawables
+            .iter()
+            .map(|d| d.transform.to_ubo())
+            .collect::<Vec<ObjectUniformBufferObject>>();
+        println!("UBOs: {:?}", ubos);
+        self.map_uniform_data(ubos);
 
         self.generate_image_states(
             drawables
