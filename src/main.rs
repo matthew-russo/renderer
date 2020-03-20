@@ -152,8 +152,6 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                 }
             };
 
-            println!("creating object with texture: {}", texture.path);
-
             objects.push((transform, mesh, texture));
         }
 
@@ -193,8 +191,6 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
         let mut frame_count = 0;
         loop {
             frame_count += 1;
-            println!("drawing frame: {:?}", frame_count);
-
             event_handler.write().unwrap().handle_events(&world);
             rotation_system.run(&world);
 
@@ -213,6 +209,7 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                 .map(|(transform, _cam)| transform.clone())
                 .next()
                 .unwrap();
+
 
             let mut need_to_update_config = false;
             if <Read<Config>>::query().iter(&mut world).next().unwrap().should_record_commands {
@@ -248,7 +245,6 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
 
             unsafe { renderer.map_uniform_data(uniform_data) };
             unsafe { renderer.draw_frame(&camera_transform) };
-            println!("drew frame: {:?}", frame_count);
         }
     });
 }
