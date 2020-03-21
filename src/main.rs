@@ -1,4 +1,5 @@
-// #![feature(custom_attribute)]
+#![feature(non_exhaustive)]
+
 #![cfg_attr(
     not(
         any(
