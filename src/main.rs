@@ -56,6 +56,7 @@ mod renderer;
 mod components;
 mod timing;
 mod systems;
+mod xr;
 
 use std::sync::{
     Arc,
@@ -75,20 +76,22 @@ use crate::components::camera::Camera;
 use crate::components::config::Config;
 use crate::primitives::three_d::cube::Cube;
 use crate::primitives::drawable::Drawable;
+use crate::primitives::uniform_buffer_object::ObjectUniformBufferObject;
 use crate::timing::Time;
 use crate::systems::rotation::Rotation;
-
 use crate::renderer::renderer::DIMS;
 use crate::events::event_handler::EventHandler;
+use crate::xr::xr::Xr;
 
 use legion::Universe;
 use legion::query::{Read, Write, IntoQuery, Query};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::ControlFlow;
-use crate::primitives::uniform_buffer_object::ObjectUniformBufferObject;
 
 fn main() {
     env_logger::init();
+
+    let xr = Xr::init();
 
     let window_builder = winit::window::WindowBuilder::new()
         .with_title("matthew's fabulous rendering engine")
