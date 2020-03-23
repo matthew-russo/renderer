@@ -27,6 +27,7 @@ log = "0.4.6"
 env_logger = "0.6.1"
 openxr = { version = "0.12.0", features = ["loaded"] }
 cmake = "0.1.42"
+ash = "0.30.0"
 
 [dependencies.gfx-backend-gl]
 version = "0.4.0"
