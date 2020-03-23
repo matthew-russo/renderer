@@ -1,13 +1,18 @@
 use openxr::{ApplicationInfo, Entry, FormFactor, Instance, SystemId};
+use std::path::Path;
 
 pub(crate) struct Xr {
     instance: Instance,
-    system: SystemId,
+    system_id: SystemId,
 }
 
 impl Xr {
     pub fn init() -> Self {
-        let entry = Entry::linked();
+        let openxr_loader_path = Path::new("/usr/local/lib/libopenxr_loader.so");
+        let entry = match Entry::load_from(openxr_loader_path) {
+            Ok(e) => e,
+            Err(e) => panic!("{:?}", e),
+        };
 
         let extension_set = entry.enumerate_extensions().unwrap();
 
@@ -32,9 +37,9 @@ impl Xr {
         println!("vulkan instance extensions: {:?}", instance.vulkan_instance_extensions(system_id));
         println!("vulkan device extensions: {:?}", instance.vulkan_device_extensions(system_id));
 
-        panic!("welcome to the danger zone");
-        // Self {
-        //     instance,
-        // }
+        Self {
+            instance,
+            system_id
+        }
     }
 }
