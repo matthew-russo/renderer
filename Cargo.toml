@@ -16,7 +16,7 @@ itertools = "0.8.2"
 glsl-to-spirv = "0.1.7"
 gfx-hal = { version = "0.4.1", path = "../gfx/src/hal" }
 gfx-backend-empty = { version = "0.4.0", path = "../gfx/src/backend/empty" }
-winit = { version = "0.20.0", features = ["web-sys"] }
+winit = { version = "0.22.0", features = ["web-sys"] }
 image = "0.21.1"
 legion = "0.1.1"
 tobj = "0.1.7"

@@ -147,7 +147,8 @@ impl EventHandler {
                     WindowEvent::AxisMotion { .. } => vec![],
                     WindowEvent::Touch(_) => vec![],
                     WindowEvent::ScaleFactorChanged { scale_factor: _, new_inner_size: _ } => vec![],
-                    WindowEvent::ThemeChanged(_) => vec![]
+                    WindowEvent::ThemeChanged(_) => vec![],
+                    WindowEvent::ModifiersChanged(_) => vec![],
                 }
             },
             Event::DeviceEvent { event, .. } => {
@@ -160,7 +161,6 @@ impl EventHandler {
                     DeviceEvent::Button { .. } => vec![],
                     DeviceEvent::Key(_) => vec![],
                     DeviceEvent::Text { .. } => vec![],
-                    DeviceEvent::ModifiersChanged(_) => vec![],
                 }
             },
             Event::Suspended => vec![],
