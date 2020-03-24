@@ -42,6 +42,7 @@ use crate::primitives::drawable::Drawable;
 use crate::components::transform::Transform;
 use crate::components::texture::Texture;
 use crate::renderer::render_key::RenderKey;
+use crate::xr::xr::VulkanXrSessionCreateInfo;
 
 pub(crate) const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 
@@ -184,6 +185,7 @@ struct DeviceState<B: hal::Backend> {
     device: B::Device,
     physical_device: B::PhysicalDevice,
     queue_group: QueueGroup<B>,
+    queue_family_index: Option<u32>,
 }
 
 impl<B: hal::Backend> DeviceState<B> {
@@ -195,6 +197,16 @@ impl<B: hal::Backend> DeviceState<B> {
                 surface.supports_queue_family(family) && family.queue_type().supports_graphics())
             .unwrap();
 
+        #[cfg(not(feature = "vulkan"))]
+        let family_index = None;
+
+        #[cfg(feature = "vulkan")]
+        let family_index = {
+            let queue_family_any = family as &dyn std::any::Any;
+            let back_queue_family: &back::QueueFamily = queue_family_any.downcast_ref().unwrap();
+            Some(back_queue_family.index)
+        };
+
         let mut gpu = adapter
             .physical_device
             .open(&[(family, &[1.0])], hal::Features::empty())
@@ -203,7 +215,8 @@ impl<B: hal::Backend> DeviceState<B> {
         Self {
             device: gpu.device,
             physical_device: adapter.physical_device,
-            queue_group: gpu.queue_groups.pop().unwrap()
+            queue_group: gpu.queue_groups.pop().unwrap(),
+            queue_family_index: family_index,
         }
     }
 }
@@ -1876,6 +1889,31 @@ impl<B: hal::Backend> Renderer<B> {
         self.viewport = Self::create_viewport(&self.swapchain_state);
         let drawables = self.last_drawables.take().unwrap();
         self.update_drawables(drawables);
+    }
+
+    #[cfg(not(feature="vulkan"))]
+    pub fn vulkan_session_create_info(&self) -> VulkanXrSessionCreateInfo {
+        panic!("trying to create VulkanXrSessionCreateInfo while not using vulkan");
+    }
+
+    #[cfg(feature="vulkan")]
+    pub unsafe fn vulkan_session_create_info(&self) -> VulkanXrSessionCreateInfo {
+        // TODO: none of this below works. we won't be able to reach in to
+        use ash::version::InstanceV1_0;
+        let physical_device  = &self.device_state.read().unwrap().physical_device;
+        let physical_device_any = physical_device as &dyn std::any::Any;
+        let back_physical_device: &back::PhysicalDevice = physical_device_any.downcast_ref().unwrap();
+
+        let device = &self.device_state.read().unwrap().device;
+        let device_any = device as &dyn std::any::Any;
+        let back_device: &back::Device = device_any.downcast_ref().unwrap();
+        VulkanXrSessionCreateInfo {
+            instance: back_physical_device.instance.0.handle(),
+            physical_device: back_physical_device.handle,
+            device: back_device.raw.0.handle(),
+            queue_family_index: self.device_state.read().unwrap().queue_family_index.unwrap(),
+            queue_index: 0,
+        }
     }
 }
 

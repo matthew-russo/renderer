@@ -99,6 +99,12 @@ fn main() {
     let renderer = unsafe { Renderer::new(backend_state) };
     let event_handler = Arc::new(RwLock::new(EventHandler::new()));
 
+    unsafe {
+        println!("here");
+        let vulkan_xr_session_create_info = renderer.vulkan_session_create_info();
+        println!("and there");
+    }
+
     start_engine(renderer, &event_handler);
 
     event_loop.run(move |event, _, control_flow| {

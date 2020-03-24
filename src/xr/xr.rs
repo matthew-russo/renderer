@@ -1,3 +1,5 @@
+use std::path::Path;
+use ash::vk;
 use openxr::{
     ApplicationInfo,
     Entry,
@@ -9,9 +11,8 @@ use openxr::{
     Session,
     Vulkan,
     Result as OpenXrResult,
+    vulkan::SessionCreateInfo,
 };
-use std::path::Path;
-use openxr::vulkan::SessionCreateInfo;
 
 pub(crate) struct Xr {
     instance: Instance,
@@ -40,14 +41,7 @@ impl Xr {
             &extension_set,
         ).unwrap();
 
-        let properties = instance.properties().unwrap();
-        println!("properties: {:?}", properties);
-
         let mut system_id = instance.system(FormFactor::HEAD_MOUNTED_DISPLAY).unwrap();
-
-        // println!("system properties: {:?}", instance.system_properties(system_id));
-        println!("vulkan instance extensions: {:?}", instance.vulkan_instance_extensions(system_id));
-        println!("vulkan device extensions: {:?}", instance.vulkan_device_extensions(system_id));
 
         Self {
             instance,
@@ -56,29 +50,30 @@ impl Xr {
     }
 
     pub unsafe fn create_vulkan_session(&self, session_create_info: VulkanXrSessionCreateInfo) -> OpenXrResult<VulkanXrSession> {
-        let create_info = SessionCreateInfo {
-            instance: session_create_info.instance,
-            physical_device: session_create_info.physical_device,
-            device: session_create_info.device,
-            queue_family_index: session_create_info.queue_family_index,
-            queue_index: session_create_info.queue_index,
-        };
+        panic!("not ready yet");
+        // let create_info = SessionCreateInfo {
+        //     instance: session_create_info.instance,
+        //     physical_device: session_create_info.physical_device,
+        //     device: session_create_info.device,
+        //     queue_family_index: session_create_info.queue_family_index,
+        //     queue_index: session_create_info.queue_index,
+        // };
 
-        self.instance
-            .create_session(self.system_id, &create_info)
-            .map( VulkanXrSession::from)
+        // self.instance
+        //     .create_session(self.system_id, &create_info)
+        //     .map( VulkanXrSession::from)
     }
 }
 
-pub(crate) struct VulkanXrSessionCreateInfo {
-    instance: vk::Instance,
-    physical_device: vk::PhysicalDevice,
-    device: vk::Device,
-    queue_family_index: u32,
-    queue_index: u32,
+pub struct VulkanXrSessionCreateInfo {
+    pub instance: vk::Instance,
+    pub physical_device: vk::PhysicalDevice,
+    pub device: vk::Device,
+    pub queue_family_index: u32,
+    pub queue_index: u32,
 }
 
-pub(crate) struct VulkanXrSession {
+pub struct VulkanXrSession {
     session: Session<Vulkan>,
     frame_waiter: FrameWaiter,
     frame_stream: FrameStream<Vulkan>,
