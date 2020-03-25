@@ -1898,7 +1898,6 @@ impl<B: hal::Backend> Renderer<B> {
 
     #[cfg(feature="vulkan")]
     pub unsafe fn vulkan_session_create_info(&self) -> VulkanXrSessionCreateInfo {
-        // TODO: none of this below works. we won't be able to reach in to
         use ash::version::InstanceV1_0;
         let physical_device  = &self.device_state.read().unwrap().physical_device;
         let physical_device_any = physical_device as &dyn std::any::Any;

@@ -29,8 +29,6 @@ impl Xr {
 
         let extension_set = entry.enumerate_extensions().unwrap();
 
-        println!("\nextension set: {:?}\n", extension_set);
-
         let instance = entry.create_instance(
             &ApplicationInfo {
                 application_name: "sxe test app",
