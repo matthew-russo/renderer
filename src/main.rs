@@ -89,8 +89,6 @@ use winit::event_loop::ControlFlow;
 fn main() {
     env_logger::init();
 
-    let xr = Xr::init();
-
     let window_builder = winit::window::WindowBuilder::new()
         .with_title("matthew's fabulous rendering engine")
         .with_inner_size(winit::dpi::LogicalSize::new(DIMS.width as f64, DIMS.height as f64));
@@ -98,6 +96,13 @@ fn main() {
     let (backend_state, _instance) = create_backend(window_builder, &event_loop);
     let renderer = unsafe { Renderer::new(backend_state) };
     let event_handler = Arc::new(RwLock::new(EventHandler::new()));
+
+    let xr = Xr::init();
+    let vulkan_xr_session = unsafe {
+        xr.create_vulkan_session(renderer.vulkan_session_create_info())
+    }.unwrap();
+
+
 
     unsafe {
         println!("here");

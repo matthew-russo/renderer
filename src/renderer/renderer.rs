@@ -1803,7 +1803,6 @@ impl<B: hal::Backend> Renderer<B> {
         let (framebuffer_fence, command_buffer) = fid.unwrap();
         let (image_acquired_semaphore, image_present_semaphore) = sid.unwrap();
 
-        println!("wait");
         self.device_state
             .read()
             .unwrap()
@@ -1817,7 +1816,6 @@ impl<B: hal::Backend> Renderer<B> {
             .device
             .reset_fence(framebuffer_fence)
             .unwrap();
-        println!("done");
 
         let submission = Submission {
             command_buffers: std::iter::once(&*command_buffer),
