@@ -1,7 +1,9 @@
 use std::path::Path;
 use ash::vk;
-use openxr::{ApplicationInfo, Entry, FormFactor, FrameWaiter, FrameStream, Instance, SystemId, Session, Vulkan, Result as OpenXrResult, vulkan::SessionCreateInfo, Swapchain};
+use openxr::{ApplicationInfo, Entry, FormFactor, FrameWaiter, FrameStream, Instance, SystemId, Session, Vulkan, Result as OpenXrResult, vulkan::SessionCreateInfo, Swapchain, SwapchainCreateInfo, SwapchainCreateFlags, ViewConfigurationType};
 use std::ffi::c_void;
+
+const VK_FORMAT_R8G8B8A8_SRGB: u32 = 43;
 
 pub(crate) struct Xr {
     instance: Instance,
@@ -66,11 +68,55 @@ pub struct VulkanXrSession {
     frame_waiter: FrameWaiter,
     frame_stream: FrameStream<Vulkan>,
     swapchain: Option<Swapchain<Vulkan>>,
+    swapchain_images: Option<Vec<gfx_backend_vulkan::native::Image>>,
 }
 
 impl VulkanXrSession {
     fn create_swapchain(&mut self) {
-        self.swapchain = Some(self.session.create_swapchain());
+        let view_configuration_views = instance
+            .enumerate_view_configuration_views(system, ViewConfigurationType::PRIMARY_STEREO)
+            .unwrap();
+
+        let resolution = (
+            view_configuration_views[0].recommended_image_rect_width,
+            view_configuration_views[0].recommended_image_rect_height,
+        );
+
+        let sample_count = view_configuration_views[0].recommended_swapchain_sample_count;
+
+        let swapchain_create_info = SwapchainCreateInfo {
+            create_flags: SwapchainCreateFlags::STATIC_IMAGE,
+            usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT
+                | xr::SwapchainUsageFlags::SAMPLED,
+            format: VK_FORMAT_R8G8B8A8_SRGB,
+            sample_count,
+            width: resolution.0,
+            height: resultion.1,
+            face_count: 1,
+            array_size: 2,
+            mip_count: 1,
+        };
+
+        let swapchain = self.session.create_swapchain(&swapchain_create_info).unwrap();
+        let swapchain_images = swapchain
+            .enumerate_images()
+            .unwrap()
+            .iter()
+            .map(|raw_image_ptr| {
+                gfx_backend_vulkan::native::Image {
+                    raw: vk::Image::from_raw(raw_image_ptr),
+                    ty: vk::ImageType::from_raw(VK_FORMAT_R8G8B8A8_SRGB as i32),
+                    flags: vk::ImageCreateFlags::empty(),
+                    extent: vk::Extent3D {
+                        width: resolution.0,
+                        height: resolution.1,
+                        depth: 1,
+                    },
+                }
+            })
+            .collect();
+        self.swapchain_images = Some(swapchain_images);
+        self.swapchain = Some(swapchain);
     }
 
     fn draw(&mut self) {
@@ -92,9 +138,6 @@ impl VulkanXrSession {
                 world_space,
             )
             .unwrap();
-
-        // set view matrices and submit to GPU
-        renderer.submit();
 
         self.swapchain.unwrap().release_image().unwrap();
         self.frame_stream

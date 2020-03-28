@@ -21,12 +21,16 @@
     )
 )]
 extern crate gfx_backend_empty as back;
+
 #[cfg(feature = "dx12")]
 extern crate gfx_backend_dx12 as back;
+
 #[cfg(feature = "gl")]
 extern crate gfx_backend_gl as back;
+
 #[cfg(feature = "metal")]
 extern crate gfx_backend_metal as back;
+
 #[cfg(feature = "vulkan")]
 extern crate gfx_backend_vulkan as back;
 
