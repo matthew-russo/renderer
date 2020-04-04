@@ -1,7 +1,11 @@
-use allocator::{Image};
+use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use crate::renderer::allocator::{Image, Uniform};
+use crate::primitives::drawable::Drawable;
+use crate::renderer::render_key::RenderKey;
 
 trait Drawer {
-    fn draw(image: &mut Image);
+    fn draw<B: hal::Backend>(image: &mut Image<B>);
 }
 
 struct GfxDrawer {
@@ -21,8 +25,27 @@ struct GfxDrawer {
 }
 
 impl GfxDrawer {
-    pub fn new() -> Self {
+    pub fn new(device: &Arc<RwLock<Device<B>>>) -> Self {
+        let render_pass = RenderPass::new(
+            &device,
+            &swapchain,
+        );
 
+        let pipeline_state = Pipeline::new(
+            &device,
+            render_pass.handle.as_ref().unwrap(),
+            vec![
+                camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
+                object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
+                image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
+            ],
+            "shaders/standard.vert",
+            "shaders/standard.frag",
+        );
+
+        Self {
+
+        }
     }
 }
 

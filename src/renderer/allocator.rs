@@ -7,7 +7,7 @@ trait Allocator<B: hal::Backend> {
 }
 
 struct GfxAllocator<B: hal::Backend> {
-    device_state: Arc<RwLock<Device<B>>>,
+    device: Arc<RwLock<Device<B>>>,
 
     image_desc_pool: Option<B::DescriptorPool>,
     uniform_desc_pool: Option<B::DescriptorPool>,
@@ -237,7 +237,7 @@ impl<B: hal::Backend> Drop for Buffer<B> {
     }
 }
 
-struct Uniform<B: hal::Backend> {
+pub(crate) struct Uniform<B: hal::Backend> {
     buffer: Option<BufferState<B>>,
     desc: Option<DescSet<B>>,
 }
@@ -282,7 +282,7 @@ impl<B: hal::Backend> Uniform<B> {
     }
 }
 
-struct Image<B: hal::Backend> {
+pub(crate) struct Image<B: hal::Backend> {
     desc_set: DescSet<B>,
     sampler: Option<B::Sampler>,
     image: Option<B::Image>,

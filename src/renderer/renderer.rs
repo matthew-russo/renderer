@@ -118,8 +118,6 @@ impl<B: hal::Backend> Renderer<B> {
             )
         );
 
-
-
         let camera_uniform_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
             &device_state,
             vec![hal::pso::DescriptorSetLayoutBinding {
@@ -256,9 +254,6 @@ impl<B: hal::Backend> Renderer<B> {
             0
         );
 
-        let mut swapchain_state = SwapchainState::new(&mut backend_state, &device_state);
-        let render_pass_state = RenderPassState::new(&device_state, &swapchain_state);
-
         let depth_image_stuff = create_image_stuff::<B>(
             &device_state.read().unwrap().device,
             &backend_state.adapter_state.memory_types,
@@ -268,26 +263,6 @@ impl<B: hal::Backend> Renderer<B> {
             hal::image::Usage::DEPTH_STENCIL_ATTACHMENT,
             Aspects::DEPTH | Aspects::STENCIL
         );
-        let framebuffer_state = FramebufferState::new(
-            &device_state,
-            &mut swapchain_state,
-            &render_pass_state,
-            depth_image_stuff
-        );
-        
-        let pipeline_state = PipelineState::new(
-            &device_state,
-            render_pass_state.render_pass.as_ref().unwrap(),
-            vec![
-                camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
-                object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
-                image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
-            ],
-            "shaders/standard.vert",
-            "shaders/standard.frag",
-        );
-
-        let viewport = Self::create_viewport(&swapchain_state);
 
         let resize_dims = Extent2D {
             width: DIMS.width,
@@ -323,18 +298,6 @@ impl<B: hal::Backend> Renderer<B> {
 
     pub fn window(&self) -> &winit::window::Window {
         self.backend_state.window()
-    }
-
-    fn create_viewport(swapchain_state: &SwapchainState<B>) -> hal::pso::Viewport {
-        hal::pso::Viewport {
-            rect: hal::pso::Rect {
-                x: 0,
-                y: 0,
-                w: swapchain_state.extent.width as _,
-                h: swapchain_state.extent.height as _,
-            },
-            depth: 0.0..1.0,
-        }
     }
 
     // Pitch must be in the range of [-90 ... 90] degrees and 

@@ -9,9 +9,44 @@ struct OpenXrPresenter {
 }
 
 struct MonitorPresenter<B: hal::Backend> {
-    viewport: Viewport,
+    device: Arc<RwLock<Device<B>>>,
+
     swapchain_state: Swapchain<B>,
     framebuffer_state: Framebuffer<B>,
+    viewport: Viewport,
+}
+
+impl <B: hal::Backend> MonitorPresenter<B> {
+    fn new(device: &Arc<RwLock<Device<B>>>) -> Self {
+        let swapchain = SwapchainState::new(
+            &mut backend,
+            &device);
+
+        let framebuffer = Framebuffer::new(
+            &device,
+            &mut swapchain,
+            &render_pass,
+            depth_image_stuff
+        );
+
+        let viewport = Self::create_viewport(&swapchain);
+
+        Self {
+
+        }
+    }
+
+    fn create_viewport(swapchain_state: &SwapchainState<B>) -> hal::pso::Viewport {
+        hal::pso::Viewport {
+            rect: hal::pso::Rect {
+                x: 0,
+                y: 0,
+                w: swapchain_state.extent.width as _,
+                h: swapchain_state.extent.height as _,
+            },
+            depth: 0.0..1.0,
+        }
+    }
 }
 
 impl <B: hal::Backend> Presenter for MonitorPresenter<B> {
