@@ -106,12 +106,8 @@ fn main() {
         xr.create_vulkan_session(renderer.vulkan_session_create_info())
     }.unwrap();
 
-
-
     unsafe {
-        println!("here");
         let vulkan_xr_session_create_info = renderer.vulkan_session_create_info();
-        println!("and there");
     }
 
     start_engine(renderer, &event_handler);
