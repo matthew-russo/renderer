@@ -9,8 +9,9 @@ trait Drawer {
 }
 
 struct GfxDrawer {
-    render_pass_state: RenderPassState<B>,
-    pipeline_state: PipelineState<B>,
+    framebuffers: Framebuffers<B>,
+    render_pass: RenderPass<B>,
+    pipeline: Pipeline<B>,
 
     image_desc_set_layout: Option<Arc<RwLock<DescSetLayout<B>>>>,
     image_states: HashMap<RenderKey, Image<B>>,
@@ -47,6 +48,258 @@ impl GfxDrawer {
 
         }
     }
+
+    unsafe fn generate_vertex_and_index_buffers(&mut self, meshes: Vec<&Mesh>) {
+        let vertices = meshes
+            .iter()
+            .flat_map(|m| {
+                m.vertices.iter().map(|v| *v)
+            })
+            .collect::<Vec<Vertex>>();
+
+        let mut current_index = 0;
+        let indices = meshes
+            .iter()
+            .flat_map(|m| {
+                let indices = m.indices
+                    .iter()
+                    .map(move |val| current_index + val);
+
+                current_index += m.vertices.len() as u32;
+
+                return indices;
+            })
+            .collect::<Vec<u32>>();
+
+        let vertex_alignment = self.backend_state.adapter_state.limits.min_vertex_input_binding_stride_alignment;
+        let vertex_buffer_state = BufferState::new(
+            &self.device_state,
+            &vertices,
+            vertex_alignment,
+            65536,
+            hal::buffer::Usage::VERTEX,
+            &self.backend_state.adapter_state.memory_types,
+        );
+
+        let index_buffer_state = BufferState::new(
+            &self.device_state,
+            &indices,
+            1,
+            65536,
+            hal::buffer::Usage::INDEX,
+            &self.backend_state.adapter_state.memory_types,
+        );
+
+        self.vertex_buffer_state = Some(vertex_buffer_state);
+        self.index_buffer_state = Some(index_buffer_state);
+    }
+
+    pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>) {
+        let ubos = drawables
+            .iter()
+            .map(|d| d.transform.to_ubo())
+            .collect::<Vec<ObjectUniformBufferObject>>();
+        println!("UBOs: {:?}", ubos);
+        self.map_uniform_data(ubos);
+
+        self.generate_image_states(
+            drawables
+                .iter()
+                .filter(|d| d.texture.is_some())
+                .map(|d| d.texture.as_ref().unwrap())
+                .collect());
+
+        self.generate_vertex_and_index_buffers(
+            drawables
+                .iter_mut()
+                .map(|d| &d.mesh)
+                .collect::<Vec<&Mesh>>()
+        );
+
+        let meshes_by_texture = drawables
+            .iter()
+            .fold(BTreeMap::<Option<Texture>, Vec<&Mesh>>::new(), |mut map, drawable| {
+                let meshes_by_texture = map.entry(drawable.texture.clone()).or_insert(Vec::new());
+                meshes_by_texture.push(&drawable.mesh);
+                map
+            });
+
+        println!("meshes by texture: {:?}", meshes_by_texture.iter().map(|(tex, meshes)| (tex.clone(), meshes.iter().map(|m| m.key.clone()).collect::<Vec<String>>())).collect::<Vec<(Option<Texture>, Vec<String>)>>());
+
+        self.generate_cmd_buffers(meshes_by_texture);
+        self.last_drawables = Some(drawables);
+    }
+
+    pub unsafe fn map_uniform_data(&mut self, ubos: Vec<ObjectUniformBufferObject>) {
+        self.object_uniform
+            .buffer
+            .as_mut()
+            .unwrap()
+            .update_data(0, &ubos);
+    }
+
+    unsafe fn generate_image_states(&mut self, textures: Vec<&Texture>) {
+        let new_textures: Vec<&Texture> = textures
+            .into_iter()
+            .filter(|t| !self.image_states.contains_key(&RenderKey::from(*t)))
+            .unique()
+            .collect();
+
+        if new_textures.is_empty() {
+            return;
+        }
+
+        for texture in new_textures.into_iter() {
+            let image = Image::new(
+                hal::buffer::Usage::TRANSFER_SRC,
+                &texture.path,
+                &hal::image::SamplerDesc::new(hal::image::Filter::Linear, hal::image::WrapMode::Clamp),
+            );
+            self.image_states.insert(RenderKey::from(texture), image_state);
+        }
+
+        self.device_state
+            .read()
+            .unwrap()
+            .device
+            .destroy_command_pool(staging_pool);
+    }
+
+    // Pitch must be in the range of [-90 ... 90] degrees and
+    // yaw must be in the range of [0 ... 360] degrees.
+    // Pitch and yaw variables must be expressed in radians.
+    pub fn update_camera_uniform_buffer_object(&self, dimensions: [f32;2], camera_transform: &Transform) -> CameraUniformBufferObject {
+        let position = camera_transform.position;
+        let rotation = cgmath::Euler::from(camera_transform.rotation);
+
+        let view = fps_view_matrix(position, rotation.y, rotation.x);
+
+        let mut proj = perspective(
+            Deg(45.0),
+            dimensions[0] / dimensions[1],
+            0.1,
+            1000.0
+        );
+
+        proj.y.y *= -1.0;
+
+        CameraUniformBufferObject::new(view, proj)
+    }
+
+    unsafe fn generate_cmd_buffers(&mut self , meshes_by_texture: BTreeMap<Option<Texture>, Vec<&Mesh>>) {
+        let framebuffers = self.framebuffer_state
+            .framebuffers
+            .as_ref()
+            .unwrap();
+
+        let command_pools = self.framebuffer_state
+            .command_pools
+            .as_mut()
+            .unwrap();
+
+        let num_buffers = framebuffers.len();
+
+        // TODO -> assert all sizes are same and all options are "Some"
+
+        let mut command_buffers: Vec<B::CommandBuffer> = Vec::new();
+
+        for current_buffer_index in 0..num_buffers {
+            let framebuffer = &framebuffers[current_buffer_index];
+            let command_pool = &mut command_pools[current_buffer_index];
+
+            // Rendering
+            let mut cmd_buffer = command_pool.allocate_one(hal::command::Level::Primary);
+            cmd_buffer.begin_primary(CommandBufferFlags::SIMULTANEOUS_USE);
+
+            cmd_buffer.set_viewports(0, &[self.viewport.clone()]);
+            cmd_buffer.set_scissors(0, &[self.viewport.rect]);
+
+            cmd_buffer.bind_graphics_pipeline(&self.pipeline_state.pipeline.as_ref().unwrap());
+            cmd_buffer.bind_vertex_buffers(0, Some((self.vertex_buffer_state.as_ref().unwrap().get_buffer(), 0)));
+            cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView {
+                buffer: self.index_buffer_state.as_ref().unwrap().get_buffer(),
+                offset: 0,
+                index_type: hal::IndexType::U32
+            });
+
+            cmd_buffer.begin_render_pass(
+                self.render_pass_state.render_pass.as_ref().unwrap(),
+                &framebuffer,
+                self.viewport.rect,
+                &[
+                    ClearValue { color: ClearColor { float32: [0.7, 0.2, 0.0, 1.0] } },
+                    ClearValue { depth_stencil: ClearDepthStencil {depth: 1.0, stencil: 0} }
+                ],
+                SubpassContents::Inline
+            );
+
+            let mut current_mesh_index = 0;
+
+            for (maybe_texture, meshes) in meshes_by_texture.iter() {
+                let texture_key = RenderKey::from(maybe_texture);
+                let texture_image_state = self.image_states.get(&texture_key).unwrap();
+
+                cmd_buffer.bind_graphics_descriptor_sets(
+                    &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
+                    2,
+                    vec![ &texture_image_state.desc_set.descriptor_set ],
+                    &[],
+                );
+
+                for (i, mesh) in meshes.iter().enumerate() {
+                    if !mesh.rendered {
+                        continue;
+                    }
+
+                    let dynamic_offset = i as u64 * self.object_uniform.buffer.as_ref().unwrap().padded_stride;
+
+                    cmd_buffer.bind_graphics_descriptor_sets(
+                        &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
+                        0,
+                        vec![
+                            &self.camera_uniform.desc.as_ref().unwrap().descriptor_set,
+                            &self.object_uniform.desc.as_ref().unwrap().descriptor_set,
+                        ],
+                        &[dynamic_offset as u32],
+                    );
+
+                    let num_indices = mesh.indices.len() as u32;
+                    cmd_buffer.draw_indexed(current_mesh_index..(current_mesh_index + num_indices), 0, 0..1);
+                    current_mesh_index += num_indices;
+                }
+            }
+
+            cmd_buffer.end_render_pass();
+            cmd_buffer.finish();
+
+            command_buffers.push(cmd_buffer);
+        }
+
+        self.framebuffer_state.command_buffers = Some(command_buffers);
+    }
+}
+
+pub fn fps_view_matrix(eye: Vector3<f32>, pitch_rad: cgmath::Rad<f32>, yaw_rad: cgmath::Rad<f32>) -> Matrix4<f32> {
+    use cgmath::Angle;
+
+    let cos_pitch = pitch_rad.cos();
+    let sin_pitch = pitch_rad.sin();
+
+    let cos_yaw = yaw_rad.cos();
+    let sin_yaw = yaw_rad.sin();
+
+    let x_axis = Vector3::new(cos_yaw, 0.0, -sin_yaw);
+    let y_axis = Vector3::new(sin_yaw * sin_pitch, cos_pitch, cos_yaw * sin_pitch);
+    let z_axis = Vector3::new(sin_yaw * cos_pitch, -sin_pitch, cos_pitch * cos_yaw);
+
+    let view_matrix = Matrix4::new(
+        x_axis.x, y_axis.x, z_axis.x, 0.0,
+        x_axis.y, y_axis.y, z_axis.y, 0.0,
+        x_axis.z, y_axis.z, z_axis.z, 0.0,
+        cgmath::dot(x_axis, eye) * -1.0, cgmath::dot(y_axis, eye) * -1.0, cgmath::dot(z_axis, eye) * -1.0, 1.0
+    );
+
+    view_matrix
 }
 
 impl Drawer for GfxDrawer {
@@ -55,12 +308,12 @@ impl Drawer for GfxDrawer {
     }
 }
 
-struct RenderPassState<B: hal::Backend> {
+struct RenderPass<B: hal::Backend> {
     render_pass: Option<B::RenderPass>,
     device_state: Arc<RwLock<DeviceState<B>>>
 }
 
-impl<B: hal::Backend> RenderPassState<B> {
+impl<B: hal::Backend> RenderPass<B> {
     fn new(device_state: &Arc<RwLock<DeviceState<B>>>, swapchain_state: &SwapchainState<B>) -> Self {
         let device = &device_state
             .read()
@@ -116,7 +369,7 @@ impl<B: hal::Backend> RenderPassState<B> {
     }
 }
 
-impl<B: hal::Backend> Drop for RenderPassState<B> {
+impl<B: hal::Backend> Drop for RenderPass<B> {
     fn drop(&mut self) {
         let device = &self.device_state.read().unwrap().device;
         unsafe {
@@ -125,13 +378,13 @@ impl<B: hal::Backend> Drop for RenderPassState<B> {
     }
 }
 
-struct PipelineState<B: hal::Backend> {
+struct Pipeline<B: hal::Backend> {
     pipeline: Option<B::GraphicsPipeline>,
     pipeline_layout: Option<B::PipelineLayout>,
     device_state: Arc<RwLock<DeviceState<B>>>
 }
 
-impl<B: hal::Backend> PipelineState<B> {
+impl<B: hal::Backend> Pipeline<B> {
     unsafe fn new(
         device_state: &Arc<RwLock<DeviceState<B>>>,
         render_pass: &B::RenderPass,
@@ -262,12 +515,212 @@ impl<B: hal::Backend> PipelineState<B> {
     }
 }
 
-impl<B: hal::Backend> Drop for PipelineState<B> {
+impl<B: hal::Backend> Drop for Pipeline<B> {
     fn drop(&mut self) {
         let device = &self.device_state.read().unwrap().device;
         unsafe {
             device.destroy_graphics_pipeline(self.pipeline.take().unwrap());
             device.destroy_pipeline_layout(self.pipeline_layout.take().unwrap());
+        }
+    }
+}
+
+struct Framebuffers<B: hal::Backend> {
+    framebuffers: Option<Vec<B::Framebuffer>>,
+    framebuffer_fences: Option<Vec<B::Fence>>,
+    command_pools: Option<Vec<B::CommandPool>>,
+    command_buffers: Option<Vec<B::CommandBuffer>>,
+    frame_images: Option<Vec<(B::Image, B::ImageView)>>,
+    acquire_semaphores: Option<Vec<B::Semaphore>>,
+    present_semaphores: Option<Vec<B::Semaphore>>,
+    last_ref: usize,
+    device_state: Arc<RwLock<DeviceState<B>>>,
+    depth_image_stuff: Option<(B::Image, B::Memory, B::ImageView)>,
+}
+
+impl<B: hal::Backend> Framebuffers<B> {
+    unsafe fn new(
+        device_state: &Arc<RwLock<DeviceState<B>>>,
+        swapchain_state: &mut Swapchain<B>,
+        render_pass_state: &RenderPass<B>,
+        // TODO -> Get rid of / clean up
+        depth_image_stuff: (B::Image, B::Memory, B::ImageView)
+    ) -> Self
+    {
+        // TODO -> create depth image for each frame
+
+        let (frame_images, framebuffers) = {
+            let extent = hal::image::Extent {
+                width: swapchain_state.extent.width as _,
+                height: swapchain_state.extent.height as _,
+                depth: 1,
+            };
+
+            let pairs = swapchain_state
+                .backbuffer
+                .take()
+                .unwrap()
+                .into_iter()
+                .map(|image| {
+                    let image_view = device_state
+                        .read()
+                        .unwrap()
+                        .device
+                        .create_image_view(
+                            &image,
+                            hal::image::ViewKind::D2,
+                            swapchain_state.format,
+                            Swizzle::NO,
+                            COLOR_RANGE.clone(),
+                        )
+                        .unwrap();
+
+                    (image, image_view)
+                })
+                .collect::<Vec<_>>();
+
+            let fbos = pairs
+                .iter()
+                .map(|&(_, ref image_view)| {
+                    device_state
+                        .read()
+                        .unwrap()
+                        .device
+                        .create_framebuffer(
+                            render_pass_state.render_pass.as_ref().unwrap(),
+                            vec![image_view, &depth_image_stuff.2],
+                            extent,
+                        )
+                        .unwrap()
+                })
+                .collect();
+
+            (pairs, fbos)
+        };
+
+        let iter_count = if frame_images.len() != 0 {
+            frame_images.len()
+        } else {
+            1 // GL can have zero
+        };
+
+        let mut fences: Vec<B::Fence> = vec![];
+        let mut command_pools: Vec<B::CommandPool> = vec![];
+        let mut acquire_semaphores: Vec<B::Semaphore> = vec![];
+        let mut present_semaphores: Vec<B::Semaphore> = vec![];
+
+        for _ in 0..iter_count {
+            fences.push(device_state.read().unwrap().device.create_fence(true).unwrap());
+            command_pools.push(
+                device_state
+                    .read()
+                    .unwrap()
+                    .device
+                    .create_command_pool(
+                        device_state
+                            .read()
+                            .unwrap()
+                            .queue_group
+                            .family,
+                        hal::pool::CommandPoolCreateFlags::empty(),
+                    )
+                    .expect("Can't create command pool"),
+            );
+
+            acquire_semaphores.push(device_state.read().unwrap().device.create_semaphore().unwrap());
+            present_semaphores.push(device_state.read().unwrap().device.create_semaphore().unwrap());
+        }
+
+        Framebuffer {
+            frame_images: Some(frame_images),
+            framebuffers: Some(framebuffers),
+            framebuffer_fences: Some(fences),
+            command_pools: Some(command_pools),
+            command_buffers: None,
+            present_semaphores: Some(present_semaphores),
+            acquire_semaphores: Some(acquire_semaphores),
+            last_ref: 0,
+            device_state: device_state.clone(),
+            depth_image_stuff: Some(depth_image_stuff),
+        }
+    }
+
+    fn next_acq_pre_pair_index(&mut self) -> usize {
+        if self.last_ref >= self.acquire_semaphores.as_ref().unwrap().len() {
+            self.last_ref = 0
+        }
+
+        let ret = self.last_ref;
+        self.last_ref += 1;
+        ret
+    }
+
+    fn get_frame_data(
+        &mut self,
+        frame_id: Option<usize>,
+        sem_index: Option<usize>,
+    ) -> (
+        Option<(
+            &mut B::Fence,
+            &mut B::CommandBuffer
+        )>,
+        Option<(&mut B::Semaphore, &mut B::Semaphore)>,
+    ) {
+        (
+            if let Some(fid) = frame_id {
+                Some((
+                    &mut self.framebuffer_fences.as_mut().unwrap()[fid],
+                    &mut self.command_buffers.as_mut().unwrap()[fid]
+                ))
+            } else {
+                None
+            },
+            if let Some(sid) = sem_index {
+                Some((
+                    &mut self.acquire_semaphores.as_mut().unwrap()[sid],
+                    &mut self.present_semaphores.as_mut().unwrap()[sid]
+                ))
+            } else {
+                None
+            },
+        )
+    }
+}
+
+impl<B: hal::Backend> Drop for Framebuffers<B> {
+    fn drop(&mut self) {
+        let device = &self.device_state.read().unwrap().device;
+
+        unsafe {
+            for fence in self.framebuffer_fences.take().unwrap() {
+                device.wait_for_fence(&fence, !0).unwrap();
+                device.destroy_fence(fence);
+            }
+
+            for command_pool in self.command_pools.take().unwrap() {
+                device.destroy_command_pool(command_pool);
+            }
+
+            for acquire_semaphore in self.acquire_semaphores.take().unwrap() {
+                device.destroy_semaphore(acquire_semaphore);
+            }
+
+            for present_semaphore in self.present_semaphores.take().unwrap() {
+                device.destroy_semaphore(present_semaphore);
+            }
+
+            for framebuffer in self.framebuffers.take().unwrap() {
+                device.destroy_framebuffer(framebuffer);
+            }
+
+            for (_, rtv) in self.frame_images.take().unwrap() {
+                device.destroy_image_view(rtv);
+            }
+
+            let depth_image_stuff = self.depth_image_stuff.take().unwrap();
+            device.destroy_image_view(depth_image_stuff.2);
+            device.destroy_image(depth_image_stuff.0);
+            device.free_memory(depth_image_stuff.1);
         }
     }
 }

@@ -52,39 +52,7 @@ const COLOR_RANGE: hal::image::SubresourceRange = hal::image::SubresourceRange {
     layers: 0..1,
 };
 
-fn load_image_data(img_path: &str, row_alignment_mask: u32) -> ImageData {
-    let img_file = File::open(data_path(img_path)).unwrap();
-    let img_reader = BufReader::new(img_file);
-    let img = load_image(img_reader, image::JPEG)
-        .unwrap()
-        .to_rgba();
 
-    let (width, height) = img.dimensions();
-
-    // TODO -> duplicated in ImageState::new
-    let image_stride = 4_usize;
-    let row_pitch = (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
-
-    let size = (width * height) as usize * image_stride;
-    let mut data: Vec<u8> = vec![0u8; size];
-
-    for y in 0..height as usize {
-        let row = &(*img)[y * (width as usize) * image_stride..(y+1) * (width as usize) * image_stride];
-        let start = y * row_pitch as usize;
-        let count = width as usize * image_stride;
-        let range = start..(start + count);
-        data.splice(range, row.iter().map(|x| *x));
-    }
-
-    let image_data = ImageData {
-        width,
-        height,
-        data,
-        format: Rgba8Srgb::SELF,
-    };
-
-    return image_data;
-}
 
 fn data_path(specific_file: &str) -> PathBuf {
     let root_data = Path::new("src/data");
@@ -185,14 +153,13 @@ impl<B: hal::Backend> Renderer<B> {
             .expect("Can't create staging command pool");
 
         let row_alignment_mask = backend_state.adapter_state.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
-        let image_data = load_image_data("textures/chalet.jpg", row_alignment_mask);
         let base_image_state = ImageState::new(
             image_desc_set,
             &device_state,
             &backend_state.adapter_state,
             hal::buffer::Usage::TRANSFER_SRC,
             &mut staging_pool,
-            &image_data,
+            "textures/chalet.jpg",
             &hal::image::SamplerDesc::new(hal::image::Filter::Linear, hal::image::WrapMode::Clamp),
         );
 
@@ -300,354 +267,7 @@ impl<B: hal::Backend> Renderer<B> {
         self.backend_state.window()
     }
 
-    // Pitch must be in the range of [-90 ... 90] degrees and 
-    // yaw must be in the range of [0 ... 360] degrees.
-    // Pitch and yaw variables must be expressed in radians.
-    pub fn fps_view_matrix(eye: Vector3<f32>, pitch_rad: cgmath::Rad<f32>, yaw_rad: cgmath::Rad<f32>) -> Matrix4<f32> {
-        use cgmath::Angle;
 
-        let cos_pitch = pitch_rad.cos();
-        let sin_pitch = pitch_rad.sin();
-
-        let cos_yaw = yaw_rad.cos();
-        let sin_yaw = yaw_rad.sin();
-
-        let x_axis = Vector3::new(cos_yaw, 0.0, -sin_yaw);
-        let y_axis = Vector3::new(sin_yaw * sin_pitch, cos_pitch, cos_yaw * sin_pitch);
-        let z_axis = Vector3::new(sin_yaw * cos_pitch, -sin_pitch, cos_pitch * cos_yaw);
-
-        let view_matrix = Matrix4::new(
-            x_axis.x, y_axis.x, z_axis.x, 0.0,
-            x_axis.y, y_axis.y, z_axis.y, 0.0,
-            x_axis.z, y_axis.z, z_axis.z, 0.0,
-            cgmath::dot(x_axis, eye) * -1.0, cgmath::dot(y_axis, eye) * -1.0, cgmath::dot(z_axis, eye) * -1.0, 1.0
-        );
-
-        view_matrix
-    }
-
-    pub fn update_camera_uniform_buffer_object(&self, dimensions: [f32;2], camera_transform: &Transform) -> CameraUniformBufferObject {
-        let position = camera_transform.position;
-        let rotation = cgmath::Euler::from(camera_transform.rotation);
-
-        let view = Self::fps_view_matrix(position, rotation.y, rotation.x);
-
-        // let view = Matrix4::look_at(
-        //     Point3::new(position.x, position.y, position.z),
-        //     Point3::new(
-        //         Deg::from(rotation.x).0,
-        //         Deg::from(rotation.y).0,
-        //         Deg::from(rotation.z).0
-        //     ),
-        //     Vector3::new(0.0, 1.0, 0.0)
-        // );
-
-        let mut proj = perspective(
-            Deg(45.0),
-            dimensions[0] / dimensions[1],
-            0.1,
-            1000.0
-        );
-
-        proj.y.y *= -1.0;
-
-        CameraUniformBufferObject::new(view, proj)
-    }
-
-    // // TODO -> change this to just map_uniform_data and pass in the uniform we're targeting
-    // pub unsafe fn map_object_uniform_data(&mut self, uniform_data: Vec<ObjectUniformBufferObject>) {
-    //     let device_writable = &mut self.device_state.write().unwrap().device;
-
-    //     // TODO -> Pass in the uniform that we need
-    //     let uniform_buffer = self
-    //         .object_uniform
-    //         .buffer
-    //         .as_mut()
-    //         .unwrap();
-
-    //     let uniform_memory = uniform_buffer
-    //         .buffer_memory
-    //         .as_ref()
-    //         .unwrap();
-
-    //     if uniform_buffer.memory_is_mapped {
-    //         device_writable.unmap_memory(uniform_memory);
-    //         uniform_buffer.memory_is_mapped = false;
-    //     }
-
-    //     match device_writable.map_memory(uniform_memory, 0..uniform_buffer.size) {
-    //         Ok(mem_ptr) => {
-    //             // if !coherent {
-    //             //     device.invalidate_mapped_memory_ranges(
-    //             //         Some((
-    //             //            buffer.memory(),
-    //             //            range.clone()
-    //             //         ))
-    //             //     );
-    //             // }
-
-    //             let data_as_bytes = uniform_data
-    //                 .iter()
-    //                 .flat_map(|ubo| any_as_u8_slice(ubo, padded_stride))
-    //                 .collect::<Vec<u8>>();
-
-    //             let slice = std::slice::from_raw_parts_mut(mem_ptr, data_as_bytes.len());
-    //             slice.copy_from_slice(&data_as_bytes[..]);
-    //
-    //             // if !coherent {
-    //             //     device.flush_mapped_memory_ranges(
-    //             //         Some((
-    //             //             buffer.memory(),
-    //             //             range
-    //             //         ))
-    //             //     );
-    //             // }
-    //         },
-    //         Err(e) => panic!("error mapping memory: {:?}", e),
-    //     }
-
-    //     uniform_buffer.memory_is_mapped = true;
-    // }
-
-    fn create_set(desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>, descriptor_pool: &mut B::DescriptorPool) -> DescSet<B> {
-        let descriptor_set = unsafe {
-            descriptor_pool.allocate_set(desc_set_layout.read().unwrap().layout.as_ref().unwrap())
-        }.unwrap();
-
-        DescSet {
-            descriptor_set,
-            desc_set_layout: desc_set_layout.clone()
-        }
-    }
-
-    unsafe fn generate_image_states(&mut self, textures: Vec<&Texture>) {
-        let new_textures: Vec<&Texture> = textures
-            .into_iter()
-            .filter(|t| !self.image_states.contains_key(&RenderKey::from(*t)))
-            .unique()
-            .collect();
-
-        if new_textures.is_empty() {
-           return;
-        }
-
-        let mut staging_pool = self.device_state
-            .read()
-            .unwrap()
-            .device
-            .create_command_pool(
-                self.device_state
-                    .read()
-                    .unwrap()
-                    .queue_group
-                    .family,
-                hal::pool::CommandPoolCreateFlags::empty(),
-            )
-            .expect("Can't create staging command pool");
-
-        for texture in new_textures.into_iter() {
-            let image_desc_set = Self::create_set(self.image_desc_set_layout.as_ref().unwrap(), self.image_desc_pool.as_mut().unwrap());
-            let row_alignment_mask = self.backend_state.adapter_state.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
-            let image_data = load_image_data(&texture.path, row_alignment_mask);
-            let image_state = ImageState::new(
-                image_desc_set,
-                &self.device_state,
-                &self.backend_state.adapter_state,
-                hal::buffer::Usage::TRANSFER_SRC,
-                &mut staging_pool,
-                &image_data,
-                &hal::image::SamplerDesc::new(hal::image::Filter::Linear, hal::image::WrapMode::Clamp),
-            );
-            self.image_states.insert(RenderKey::from(texture), image_state);
-        }
-
-        self.device_state
-            .read()
-            .unwrap()
-            .device
-            .destroy_command_pool(staging_pool);
-    }
-
-    unsafe fn generate_vertex_and_index_buffers(&mut self, meshes: Vec<&Mesh>) {
-        let vertices = meshes
-            .iter()
-            .flat_map(|m| {
-                m.vertices.iter().map(|v| *v)
-            })
-            .collect::<Vec<Vertex>>();
-
-        let mut current_index = 0;
-        let indices = meshes
-            .iter()
-            .flat_map(|m| {
-                let indices = m.indices
-                    .iter()
-                    .map(move |val| current_index + val);
-
-                 current_index += m.vertices.len() as u32;
-
-                 return indices;
-             })
-             .collect::<Vec<u32>>();
-
-        let vertex_alignment = self.backend_state.adapter_state.limits.min_vertex_input_binding_stride_alignment;
-        let vertex_buffer_state = BufferState::new(
-            &self.device_state,
-            &vertices,
-            vertex_alignment,
-            65536,
-            hal::buffer::Usage::VERTEX,
-            &self.backend_state.adapter_state.memory_types,
-        );
-       
-        let index_buffer_state = BufferState::new(
-            &self.device_state,
-            &indices,
-            1,
-            65536,
-            hal::buffer::Usage::INDEX,
-            &self.backend_state.adapter_state.memory_types,
-        );
-
-        self.vertex_buffer_state = Some(vertex_buffer_state);
-        self.index_buffer_state = Some(index_buffer_state);
-    }
-
-    unsafe fn generate_cmd_buffers(&mut self , meshes_by_texture: BTreeMap<Option<Texture>, Vec<&Mesh>>) {
-        let framebuffers = self.framebuffer_state
-            .framebuffers
-            .as_ref()
-            .unwrap();
-
-        let command_pools = self.framebuffer_state
-            .command_pools
-            .as_mut()
-            .unwrap();
-
-        let num_buffers = framebuffers.len();
-
-        // TODO -> assert all sizes are same and all options are "Some"
-
-        let mut command_buffers: Vec<B::CommandBuffer> = Vec::new();
-
-        for current_buffer_index in 0..num_buffers {
-            let framebuffer = &framebuffers[current_buffer_index];
-            let command_pool = &mut command_pools[current_buffer_index];
-            
-            // Rendering
-            let mut cmd_buffer = command_pool.allocate_one(hal::command::Level::Primary);
-            cmd_buffer.begin_primary(CommandBufferFlags::SIMULTANEOUS_USE);
-
-            cmd_buffer.set_viewports(0, &[self.viewport.clone()]);
-            cmd_buffer.set_scissors(0, &[self.viewport.rect]);
-
-            cmd_buffer.bind_graphics_pipeline(&self.pipeline_state.pipeline.as_ref().unwrap());
-            cmd_buffer.bind_vertex_buffers(0, Some((self.vertex_buffer_state.as_ref().unwrap().get_buffer(), 0)));
-            cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView {
-                buffer: self.index_buffer_state.as_ref().unwrap().get_buffer(),
-                offset: 0,
-                index_type: hal::IndexType::U32
-            });
-
-            cmd_buffer.begin_render_pass(
-                self.render_pass_state.render_pass.as_ref().unwrap(),
-                &framebuffer,
-                self.viewport.rect,
-                &[
-                    ClearValue { color: ClearColor { float32: [0.7, 0.2, 0.0, 1.0] } },
-                    ClearValue { depth_stencil: ClearDepthStencil {depth: 1.0, stencil: 0} }
-                ],
-                SubpassContents::Inline
-            );
-
-            let mut current_mesh_index = 0;
-
-            for (maybe_texture, meshes) in meshes_by_texture.iter() {
-                let texture_key = RenderKey::from(maybe_texture);
-                let texture_image_state = self.image_states.get(&texture_key).unwrap();
-
-                cmd_buffer.bind_graphics_descriptor_sets(
-                    &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
-                    2,
-                    vec![ &texture_image_state.desc_set.descriptor_set ],
-                    &[],
-                );
-
-                for (i, mesh) in meshes.iter().enumerate() {
-                    if !mesh.rendered {
-                        continue;
-                    }
-
-                    let dynamic_offset = i as u64 * self.object_uniform.buffer.as_ref().unwrap().padded_stride;
-
-                    cmd_buffer.bind_graphics_descriptor_sets(
-                        &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
-                        0,
-                        vec![
-                            &self.camera_uniform.desc.as_ref().unwrap().descriptor_set,
-                            &self.object_uniform.desc.as_ref().unwrap().descriptor_set,
-                        ],
-                        &[dynamic_offset as u32],
-                    );
-
-                    let num_indices = mesh.indices.len() as u32;
-                    cmd_buffer.draw_indexed(current_mesh_index..(current_mesh_index + num_indices), 0, 0..1);
-                    current_mesh_index += num_indices;
-                }
-            }
-
-            cmd_buffer.end_render_pass();
-            cmd_buffer.finish();
-
-            command_buffers.push(cmd_buffer);
-        }
-
-        self.framebuffer_state.command_buffers = Some(command_buffers);
-    }
-
-    pub unsafe fn map_uniform_data(&mut self, ubos: Vec<ObjectUniformBufferObject>) {
-        self.object_uniform
-            .buffer
-            .as_mut()
-            .unwrap()
-            .update_data(0, &ubos);
-    }
-
-    pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>) {
-        let ubos = drawables
-            .iter()
-            .map(|d| d.transform.to_ubo())
-            .collect::<Vec<ObjectUniformBufferObject>>();
-        println!("UBOs: {:?}", ubos);
-        self.map_uniform_data(ubos);
-
-        self.generate_image_states(
-            drawables
-                .iter()
-                .filter(|d| d.texture.is_some())
-                .map(|d| d.texture.as_ref().unwrap())
-                .collect());
-
-        self.generate_vertex_and_index_buffers(
-            drawables
-                .iter_mut()
-                .map(|d| &d.mesh)
-                .collect::<Vec<&Mesh>>()
-        );
-
-        let meshes_by_texture = drawables
-            .iter()
-            .fold(BTreeMap::<Option<Texture>, Vec<&Mesh>>::new(), |mut map, drawable| {
-                let meshes_by_texture = map.entry(drawable.texture.clone()).or_insert(Vec::new());
-                meshes_by_texture.push(&drawable.mesh);
-                map
-            });
-
-        println!("meshes by texture: {:?}", meshes_by_texture.iter().map(|(tex, meshes)| (tex.clone(), meshes.iter().map(|m| m.key.clone()).collect::<Vec<String>>())).collect::<Vec<(Option<Texture>, Vec<String>)>>());
-
-        self.generate_cmd_buffers(meshes_by_texture);
-        self.last_drawables = Some(drawables);
-    }
 
     pub unsafe fn draw_frame(&mut self, camera_transform: &Transform) {
         if self.recreate_swapchain {
@@ -714,24 +334,25 @@ impl<B: hal::Backend> Renderer<B> {
         self.device_state
             .write()
             .unwrap()
-            .queue_group.queues[0]
+            .queue_group
+            .queues[0]
             .submit(submission, Some(framebuffer_fence));
 
         // present frame
-        if let Err(e) = self
-            .swapchain_state
-            .swapchain
-            .as_mut()
-            .unwrap()
-            .present(
-                &mut self.device_state.write().unwrap().queue_group.queues[0],
-                frame,
-                Some(&*image_present_semaphore),
-            )
-        {
-            println!("error on presenting: {:?}", e);
-            self.recreate_swapchain = true;
-        }
+        // if let Err(e) = self
+        //     .swapchain_state
+        //     .swapchain
+        //     .as_mut()
+        //     .unwrap()
+        //     .present(
+        //         &mut self.device_state.write().unwrap().queue_group.queues[0],
+        //         frame,
+        //         Some(&*image_present_semaphore),
+        //     )
+        // {
+        //     println!("error on presenting: {:?}", e);
+        //     self.recreate_swapchain = true;
+        // }
     }
 
     unsafe fn recreate_swapchain(&mut self) {
@@ -778,12 +399,12 @@ impl<B: hal::Backend> Renderer<B> {
     }
 
     #[cfg(not(feature="vulkan"))]
-    pub fn vulkan_session_create_info(&self) -> VulkanXrSessionCreateInfo {
-        panic!("trying to create VulkanXrSessionCreateInfo while not using vulkan");
+    pub fn vulkan_session_create_info(&self) -> Result<VulkanXrSessionCreateInfo, String> {
+        Err(String::from("trying to create VulkanXrSessionCreateInfo while not using vulkan"));
     }
 
     #[cfg(feature="vulkan")]
-    pub unsafe fn vulkan_session_create_info(&self) -> VulkanXrSessionCreateInfo {
+    pub unsafe fn vulkan_session_create_info(&self) -> Result<VulkanXrSessionCreateInfo, String> {
         use ash::version::InstanceV1_0;
         let physical_device  = &self.device_state.read().unwrap().physical_device;
         let physical_device_any = physical_device as &dyn std::any::Any;
@@ -792,13 +413,13 @@ impl<B: hal::Backend> Renderer<B> {
         let device = &self.device_state.read().unwrap().device;
         let device_any = device as &dyn std::any::Any;
         let back_device: &back::Device = device_any.downcast_ref().unwrap();
-        VulkanXrSessionCreateInfo {
+        Ok(VulkanXrSessionCreateInfo {
             instance: back_physical_device.instance.0.handle(),
             physical_device: back_physical_device.handle,
             device: back_device.raw.0.handle(),
             queue_family_index: self.device_state.read().unwrap().queue_family_index.unwrap(),
             queue_index: 0,
-        }
+        })
     }
 }
 

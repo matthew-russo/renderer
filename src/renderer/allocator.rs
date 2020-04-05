@@ -4,6 +4,8 @@ trait Allocator<B: hal::Backend> {
     fn alloc_buffer() -> Buffer<B>;
     fn alloc_uniform() -> Uniform<B>;
     fn alloc_image() -> Image<B>;
+    fn alloc_desc_set_layout() -> DescSetLayout<B>;
+    fn alloc_desc_set() -> DescSet<B>;
 }
 
 struct GfxAllocator<B: hal::Backend> {
@@ -87,6 +89,17 @@ impl <B: hal::Backend> GfxAllocator<B> {
 
         }
     }
+
+    fn create_set(desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>, descriptor_pool: &mut B::DescriptorPool) -> DescSet<B> {
+        let descriptor_set = unsafe {
+            descriptor_pool.allocate_set(desc_set_layout.read().unwrap().layout.as_ref().unwrap())
+        }.unwrap();
+
+        DescSet {
+            descriptor_set,
+            desc_set_layout: desc_set_layout.clone()
+        }
+    }
 }
 
 impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
@@ -100,6 +113,10 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
 
     fn alloc_image() -> Image<B> {
         unimplemented!()
+    }
+
+    fn alloc_desc_set() -> DescSet {
+
     }
 }
 
@@ -298,14 +315,28 @@ pub(crate) struct Image<B: hal::Backend> {
 //
 impl<B: hal::Backend> Image<B> {
     unsafe fn new(
-        desc_set: DescSet<B>,
-        device_state: &Arc<RwLock<DeviceState<B>>>,
-        adapter_state: &AdapterState<B>,
         _usage: hal::buffer::Usage,
-        command_pool: &mut B::CommandPool,
-        img_data: &ImageData,
+        img_path: &String,
         sampler_desc: &hal::image::SamplerDesc,
     ) -> Self {
+        let mut staging_pool = self.device_state
+            .read()
+            .unwrap()
+            .device
+            .create_command_pool(
+                self.device_state
+                    .read()
+                    .unwrap()
+                    .queue_group
+                    .family,
+                hal::pool::CommandPoolCreateFlags::empty(),
+            )
+            .expect("Can't create staging command pool");
+
+        let image_desc_set = Self::create_set(self.image_desc_set_layout.as_ref().unwrap(), self.image_desc_pool.as_mut().unwrap());
+        let row_alignment_mask = self.backend_state.adapter_state.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
+        let image_data = load_image_data(img_path, row_alignment_mask);
+
         let kind = hal::image::Kind::D2(img_data.width as hal::image::Size, img_data.height as hal::image::Size, 1, 1);
         let row_alignment_mask = adapter_state.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
         let image_stride = 4_usize;
@@ -492,6 +523,40 @@ impl<B: hal::Backend> Image<B> {
                 .unwrap();
         }
     }
+}
+
+fn load_image_data(img_path: &str, row_alignment_mask: u32) -> ImageData {
+    let img_file = File::open(data_path(img_path)).unwrap();
+    let img_reader = BufReader::new(img_file);
+    let img = load_image(img_reader, image::JPEG)
+        .unwrap()
+        .to_rgba();
+
+    let (width, height) = img.dimensions();
+
+    // TODO -> duplicated in ImageState::new
+    let image_stride = 4_usize;
+    let row_pitch = (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
+
+    let size = (width * height) as usize * image_stride;
+    let mut data: Vec<u8> = vec![0u8; size];
+
+    for y in 0..height as usize {
+        let row = &(*img)[y * (width as usize) * image_stride..(y+1) * (width as usize) * image_stride];
+        let start = y * row_pitch as usize;
+        let count = width as usize * image_stride;
+        let range = start..(start + count);
+        data.splice(range, row.iter().map(|x| *x));
+    }
+
+    let image_data = ImageData {
+        width,
+        height,
+        data,
+        format: Rgba8Srgb::SELF,
+    };
+
+    return image_data;
 }
 
 impl<B: hal::Backend> Drop for Image<B> {

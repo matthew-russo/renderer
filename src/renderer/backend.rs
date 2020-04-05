@@ -1,7 +1,4 @@
-
-pub struct RendererBackend<B: hal::Backend> {
-
-}
+use hal::adapter::{Adapter, MemoryType, PhysicalDevice};
 
 struct AdapterState<B: hal::Backend> {
     adapter: Option<Adapter<B>>,
