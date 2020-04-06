@@ -24,11 +24,9 @@ use hal::window::{Extent2D, Surface, Swapchain, SwapchainConfig};
 use image::load as load_image;
 
 use cgmath::{
-    Deg,
     Vector3,
     Matrix4,
     SquareMatrix,
-    perspective,
 };
 
 use crate::primitives::vertex::Vertex;
@@ -270,73 +268,15 @@ impl<B: hal::Backend> Renderer<B> {
 
 
     pub unsafe fn draw_frame(&mut self, camera_transform: &Transform) {
-        if self.recreate_swapchain {
-            self.recreate_swapchain();
-            self.recreate_swapchain = false; 
-        }
+        // if self.recreate_swapchain {
+        //     self.recreate_swapchain();
+        //     self.recreate_swapchain = false;
+        // }
+        // let dims = [DIMS.width as f32, DIMS.height as f32];
 
-        let dims = [DIMS.width as f32, DIMS.height as f32];
-
-        let new_ubo = self.update_camera_uniform_buffer_object(dims, camera_transform);
-        self.camera_uniform.buffer.as_mut().unwrap().update_data(0, &[new_ubo]);
-
-        let sem_index = self.framebuffer_state.next_acq_pre_pair_index();
-
-        let frame: hal::window::SwapImageIndex = {
-            let (acquire_semaphore, _) = self
-                .framebuffer_state
-                .get_frame_data(None, Some(sem_index))
-                .1
-                .unwrap();
-
-            match self
-                .swapchain_state
-                .swapchain
-                .as_mut()
-                .unwrap()
-                .acquire_image(!0, Some(acquire_semaphore), None)
-            {
-                Ok((i, _)) => i,
-                Err(e) => {
-					error!("we gots an error on AQUIREIMAGE: {:?}", e);
-                    self.recreate_swapchain = true;
-                    return;
-                }
-            }
-        };
-
-        let (fid, sid) = self.framebuffer_state
-            .get_frame_data(Some(frame as usize), Some(sem_index));
-
-        let (framebuffer_fence, command_buffer) = fid.unwrap();
-        let (image_acquired_semaphore, image_present_semaphore) = sid.unwrap();
-
-        self.device_state
-            .read()
-            .unwrap()
-            .device
-            .wait_for_fence(framebuffer_fence, !0)
-            .unwrap();
-
-        self.device_state
-            .read()
-            .unwrap()
-            .device
-            .reset_fence(framebuffer_fence)
-            .unwrap();
-
-        let submission = Submission {
-            command_buffers: std::iter::once(&*command_buffer),
-            wait_semaphores: std::iter::once((&*image_acquired_semaphore, PipelineStage::BOTTOM_OF_PIPE)),
-            signal_semaphores: std::iter::once(&*image_present_semaphore),
-        };
-
-        self.device_state
-            .write()
-            .unwrap()
-            .queue_group
-            .queues[0]
-            .submit(submission, Some(framebuffer_fence));
+        // ...
+        // ...
+        // ...
 
         // present frame
         // if let Err(e) = self
