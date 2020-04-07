@@ -1,4 +1,12 @@
 use std::sync::{Arc, RwLock};
+use std::fs::File;
+use std::io::BufReader;
+
+const COLOR_RANGE: hal::image::SubresourceRange = hal::image::SubresourceRange {
+    aspects: Aspects::COLOR,
+    levels: 0..1,
+    layers: 0..1,
+};
 
 trait Allocator<B: hal::Backend> {
     fn alloc_buffer() -> Buffer<B>;
@@ -523,6 +531,13 @@ impl<B: hal::Backend> Image<B> {
                 .unwrap();
         }
     }
+}
+
+struct ImageData {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+    pub format: hal::format::Format,
 }
 
 fn load_image_data(img_path: &str, row_alignment_mask: u32) -> ImageData {

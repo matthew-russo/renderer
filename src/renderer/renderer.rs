@@ -44,29 +44,9 @@ use crate::xr::xr::VulkanXrSessionCreateInfo;
 
 pub(crate) const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 
-const COLOR_RANGE: hal::image::SubresourceRange = hal::image::SubresourceRange {
-    aspects: Aspects::COLOR,
-    levels: 0..1,
-    layers: 0..1,
-};
-
-
-
-fn data_path(specific_file: &str) -> PathBuf {
-    let root_data = Path::new("src/data");
-    let specific_file_path = Path::new(specific_file);
-    return root_data.join(specific_file_path);
-}
-
-struct ImageData {
-    pub width: u32,
-    pub height: u32,
-    pub data: Vec<u8>,
-    pub format: hal::format::Format,
-}
-
 pub struct Renderer<B: hal::Backend> {
     backend_state: BackendState<B>,
+
     device_state: Arc<RwLock<DeviceState<B>>>,
 
     recreate_swapchain: bool,
@@ -261,12 +241,6 @@ impl<B: hal::Backend> Renderer<B> {
         }
     }
 
-    pub fn window(&self) -> &winit::window::Window {
-        self.backend_state.window()
-    }
-
-
-
     pub unsafe fn draw_frame(&mut self, camera_transform: &Transform) {
         // if self.recreate_swapchain {
         //     self.recreate_swapchain();
@@ -340,7 +314,7 @@ impl<B: hal::Backend> Renderer<B> {
 
     #[cfg(not(feature="vulkan"))]
     pub fn vulkan_session_create_info(&self) -> Result<VulkanXrSessionCreateInfo, String> {
-        Err(String::from("trying to create VulkanXrSessionCreateInfo while not using vulkan"));
+        Err(String::from("trying to create VulkanXrSessionCreateInfo while not using vulkan"))
     }
 
     #[cfg(feature="vulkan")]
@@ -447,15 +421,4 @@ impl<B: hal::Backend> Drop for Renderer<B> {
                 .destroy_descriptor_pool(self.uniform_desc_pool.take().unwrap());
         }
     }
-}
-
-unsafe fn any_as_u8_slice<T: Sized>(p: &T, pad_to_size: usize) -> Vec<u8> {
-    let mut vec = std::slice::from_raw_parts(
-        (p as *const T) as *const u8,
-        std::mem::size_of::<T>())
-        .to_vec();
-
-    vec.resize(pad_to_size, 0);
-
-    vec
 }

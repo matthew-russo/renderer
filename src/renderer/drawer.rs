@@ -1,13 +1,15 @@
+use cgmath::Vector3;
 use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
+
 use crate::renderer::allocator::{Image, Uniform};
-use crate::primitives::drawable::Drawable;
 use crate::renderer::render_key::RenderKey;
+use crate::primitives::drawable::Drawable;
 use crate::primitives::uniform_buffer_object::CameraUniformBufferObject;
 use crate::components::transform::Transform;
 
 trait Drawer<B: hal::Backend> {
-    fn draw(image: &mut Image<B>);
+    fn draw(&mut self, image_index: usize);
 }
 
 struct GfxDrawer<B: hal::Backend> {
@@ -28,7 +30,7 @@ struct GfxDrawer<B: hal::Backend> {
 }
 
 impl GfxDrawer {
-    pub fn new(device: &Arc<RwLock<Device<B>>>) -> Self {
+    pub unsafe fn new(device: &Arc<RwLock<Device<B>>>) -> Self {
         let render_pass = RenderPass::new(
             &device,
             &swapchain,

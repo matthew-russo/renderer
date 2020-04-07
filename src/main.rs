@@ -59,6 +59,7 @@ mod components;
 mod timing;
 mod systems;
 mod xr;
+mod utils;
 
 use std::sync::{
     Arc,
@@ -98,17 +99,23 @@ fn main() {
         .with_inner_size(winit::dpi::LogicalSize::new(DIMS.width as f64, DIMS.height as f64));
     let event_loop = winit::event_loop::EventLoop::new();
     let (backend_state, _instance) = create_backend(window_builder, &event_loop);
-    let renderer = unsafe { Renderer::new(backend_state) };
+
+    let renderer_core = RendererCore::new();
+    let renderer_allocator = GfxAllocator::new();
+    let renderer_drawer = GfxDrawer::new();
+
+    #[cfg(feature = "xr")]
+    let renderer_presenter = XrPresenter::new();
+
+    #[cfg(not(feature = "xr"))]
+    let renderer_presenter = MonitorPresenter::new();
+
     let event_handler = Arc::new(RwLock::new(EventHandler::new()));
 
     let xr = Xr::init();
     let vulkan_xr_session = unsafe {
         xr.create_vulkan_session(renderer.vulkan_session_create_info())
     }.unwrap();
-
-    unsafe {
-        let vulkan_xr_session_create_info = renderer.vulkan_session_create_info();
-    }
 
     start_engine(renderer, &event_handler);
 

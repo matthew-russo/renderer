@@ -1,20 +1,35 @@
-use hal::adapter::{Adapter, MemoryType, PhysicalDevice};
+use hal::adapter::{MemoryType, PhysicalDevice};
+use hal::Instance;
 
-struct AdapterState<B: hal::Backend> {
-    adapter: Option<Adapter<B>>,
+struct RendererCore<B: hal::Backend> {
+    backend: GfxBackend<B>,
+    device: GfxDevice<B>,
+}
+
+impl <B: hal::Backend> RendererCore<B> {
+    pub fn new() -> Self {
+
+        Self {
+
+        }
+    }
+}
+
+struct GfxAdapter<B: hal::Backend> {
+    adapter: Option<hal::adapter::Adapter<B>>,
     memory_types: Vec<MemoryType>,
     limits: Limits,
 }
 
-impl<B: hal::Backend> AdapterState<B> {
-    fn new(adapters: &mut Vec<Adapter<B>>) -> Self {
+impl <B: hal::Backend> GfxAdapter<B> {
+    fn new(adapters: &mut Vec<hal::adapter::Adapter<B>>) -> Self {
         match Self::pick_best_adapter(adapters) {
             Some(adapter) => Self::create_adapter_state(adapter),
             None => panic!("Failed to pick an adapter")
         }
     }
 
-    fn pick_best_adapter(adapters: &mut Vec<Adapter<B>>) -> Option<Adapter<B>> {
+    fn pick_best_adapter(adapters: &mut Vec<hal::adapter::Adapter<B>>) -> Option<hal::adapter::Adapter<B>> {
         if adapters.is_empty() {
             return None;
         }
@@ -23,7 +38,7 @@ impl<B: hal::Backend> AdapterState<B> {
         return Some(adapters.remove(0));
     }
 
-    fn create_adapter_state(adapter: Adapter<B>) -> Self {
+    fn create_adapter_state(adapter: hal::adapter::Adapter<B>) -> Self {
         let memory_types = adapter.physical_device.memory_properties().memory_types;
         let limits = adapter.physical_device.limits();
 
@@ -35,24 +50,24 @@ impl<B: hal::Backend> AdapterState<B> {
     }
 }
 
-pub struct BackendState<B: hal::Backend> {
+pub struct GfxBackend<B: hal::Backend> {
     surface: B::Surface,
-    adapter_state: AdapterState<B>,
+    adapter: GfxAdapter<B>,
 
     #[cfg(any(feature = "vulkan", feature = "dx11", feature = "dx12", feature = "metal"))]
     #[allow(dead_code)]
     window: winit::window::Window,
 }
 
-struct DeviceState<B: hal::Backend> {
+struct GfxDevice<B: hal::Backend> {
     device: B::Device,
     physical_device: B::PhysicalDevice,
     queue_group: QueueGroup<B>,
     queue_family_index: Option<u32>,
 }
 
-impl<B: hal::Backend> DeviceState<B> {
-    unsafe fn new(adapter: Adapter<B>, surface: &dyn Surface<B>) -> Self {
+impl<B: hal::Backend> GfxDevice<B> {
+    unsafe fn new(adapter: hal::adapter::Adapter<B>, surface: &dyn Surface<B>) -> Self {
         let family = adapter
             .queue_families
             .iter()
@@ -85,19 +100,19 @@ impl<B: hal::Backend> DeviceState<B> {
 }
 
 
-impl <B: hal::Backend> BackendState<B> {
+impl <B: hal::Backend> GfxBackend<B> {
     pub fn window(&self) -> &winit::window::Window {
         &self.window
     }
 }
 
 #[cfg(not(any(feature="gl", feature="dx12", feature="vulkan", feature="metal")))]
-pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (BackendState<back::Backend>, ()) {
+pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (GfxBackend<back::Backend>, ()) {
     panic!("You must specify one of the valid backends using --features=<backend>, with \"gl\", \"dx12\", \"vulkan\", and \"metal\" being valid backends.");
 }
 
 #[cfg(feature="gl")]
-pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (BackendState<back::Backend>, ()) {
+pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (GfxBackend<back::Backend>, ()) {
     let (mut adapters, mut surface) = {
         let window = {
             let builder = back::config_context(back::glutin::ContextBuilder::new(), Rgba8Srgb::SELF, None).with_vsync(true);
@@ -109,16 +124,16 @@ pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: 
         (apaters, surface)
     };
 
-    let backend_state = BackendState {
+    let backend_state = GfxBackend {
         surface,
-        adapter_state: AdapterState::new(adapters),
+        adapter: GfxAdapter::new(adapters),
     };
 
     (backend_state, ())
 }
 
 #[cfg(any(feature="dx12", feature="vulkan", feature="metal"))]
-pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (BackendState<back::Backend>, back::Instance) {
+pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (GfxBackend<back::Backend>, back::Instance) {
     let window = window_builder
         .build(event_loop)
         .unwrap();
@@ -127,9 +142,9 @@ pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: 
     let surface = unsafe { instance.create_surface(&window).expect("Failed to create a surface") };
     let mut adapters = instance.enumerate_adapters();
 
-    let backend_state = BackendState {
+    let backend_state = GfxBackend {
         surface,
-        adapter_state: AdapterState::new(&mut adapters),
+        adapter: GfxAdapter::new(&mut adapters),
         window
     };
 

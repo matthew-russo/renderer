@@ -7,7 +7,7 @@ trait Presenter<B: hal::Backend> {
     fn present(&self) -> Result<(), String>;
 }
 
-struct OpenXrPresenter {
+struct XrPresenter {
 
 }
 
