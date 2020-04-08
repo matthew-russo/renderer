@@ -1,5 +1,6 @@
 use hal::adapter::{MemoryType, PhysicalDevice};
 use hal::Instance;
+use hal::queue::QueueFamily;
 
 struct RendererCore<B: hal::Backend> {
     backend: GfxBackend<B>,
@@ -7,10 +8,19 @@ struct RendererCore<B: hal::Backend> {
 }
 
 impl <B: hal::Backend> RendererCore<B> {
-    pub fn new() -> Self {
+    pub unsafe fn new(size: winit::dpi::LogicalSize<f64>, event_loop: &winit::event_loop::EventLoop<()>) -> Self {
+        let window_builder = winit::window::WindowBuilder::new()
+            .with_title("sxe")
+            .with_inner_size(size);
+        let (backend, _instance) = create_backend(window_builder, event_loop);
+        let device = GfxDevice::new(
+            backend.adapter.adapter.take().unwrap(),
+            &backend.surface
+        );
 
         Self {
-
+            backend,
+            device,
         }
     }
 }
@@ -18,7 +28,7 @@ impl <B: hal::Backend> RendererCore<B> {
 struct GfxAdapter<B: hal::Backend> {
     adapter: Option<hal::adapter::Adapter<B>>,
     memory_types: Vec<MemoryType>,
-    limits: Limits,
+    limits: hal::Limits,
 }
 
 impl <B: hal::Backend> GfxAdapter<B> {
@@ -51,7 +61,7 @@ impl <B: hal::Backend> GfxAdapter<B> {
 }
 
 pub struct GfxBackend<B: hal::Backend> {
-    surface: B::Surface,
+    pub surface: B::Surface,
     adapter: GfxAdapter<B>,
 
     #[cfg(any(feature = "vulkan", feature = "dx11", feature = "dx12", feature = "metal"))]
@@ -62,12 +72,12 @@ pub struct GfxBackend<B: hal::Backend> {
 struct GfxDevice<B: hal::Backend> {
     device: B::Device,
     physical_device: B::PhysicalDevice,
-    queue_group: QueueGroup<B>,
+    queue_group: hal::queue::QueueGroup<B>,
     queue_family_index: Option<u32>,
 }
 
-impl<B: hal::Backend> GfxDevice<B> {
-    unsafe fn new(adapter: hal::adapter::Adapter<B>, surface: &dyn Surface<B>) -> Self {
+impl <B: hal::Backend> GfxDevice<B> {
+    unsafe fn new(adapter: hal::adapter::Adapter<B>, surface: &dyn hal::window::Surface<B>) -> Self {
         let family = adapter
             .queue_families
             .iter()
@@ -107,12 +117,12 @@ impl <B: hal::Backend> GfxBackend<B> {
 }
 
 #[cfg(not(any(feature="gl", feature="dx12", feature="vulkan", feature="metal")))]
-pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (GfxBackend<back::Backend>, ()) {
+fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (GfxBackend<back::Backend>, ()) {
     panic!("You must specify one of the valid backends using --features=<backend>, with \"gl\", \"dx12\", \"vulkan\", and \"metal\" being valid backends.");
 }
 
 #[cfg(feature="gl")]
-pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (GfxBackend<back::Backend>, ()) {
+fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (GfxBackend<back::Backend>, ()) {
     let (mut adapters, mut surface) = {
         let window = {
             let builder = back::config_context(back::glutin::ContextBuilder::new(), Rgba8Srgb::SELF, None).with_vsync(true);
@@ -133,7 +143,7 @@ pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: 
 }
 
 #[cfg(any(feature="dx12", feature="vulkan", feature="metal"))]
-pub fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (GfxBackend<back::Backend>, back::Instance) {
+fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (GfxBackend<back::Backend>, back::Instance) {
     let window = window_builder
         .build(event_loop)
         .unwrap();

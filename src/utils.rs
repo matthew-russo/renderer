@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 pub unsafe fn any_as_u8_slice<T: Sized>(p: &T, pad_to_size: usize) -> Vec<u8> {
     let mut raw_bytes = std::slice::from_raw_parts(
         (p as *const T) as *const u8,

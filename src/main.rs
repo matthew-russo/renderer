@@ -48,7 +48,6 @@ extern crate legion;
 extern crate cgmath;
 extern crate uuid;
 
-#[macro_use]
 extern crate log;
 extern crate env_logger;
 
@@ -94,14 +93,9 @@ use winit::event_loop::ControlFlow;
 fn main() {
     env_logger::init();
 
-    let window_builder = winit::window::WindowBuilder::new()
-        .with_title("matthew's fabulous rendering engine")
-        .with_inner_size(winit::dpi::LogicalSize::new(DIMS.width as f64, DIMS.height as f64));
     let event_loop = winit::event_loop::EventLoop::new();
-    let (backend_state, _instance) = create_backend(window_builder, &event_loop);
-
-    let renderer_core = RendererCore::new();
-    let renderer_allocator = GfxAllocator::new();
+    let renderer_core = Arc::new(RwLock::new(RendererCore::new(event_loop));
+    let renderer_allocator = GfxAllocator::new(&renderer_core);
     let renderer_drawer = GfxDrawer::new();
 
     #[cfg(feature = "xr")]

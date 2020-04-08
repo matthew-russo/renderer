@@ -1,4 +1,9 @@
 use std::sync::{Arc, RwLock};
+use crate::renderer::core::GfxBackend;
+use hal::window::{Surface, Swapchain};
+
+
+const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 
 type ImageIndex = u32;
 
@@ -12,14 +17,14 @@ struct XrPresenter {
 }
 
 struct MonitorPresenter<B: hal::Backend> {
-    device: Arc<RwLock<Device<B>>>,
+    device: Arc<RwLock<GfxDevice<B>>>,
     swapchain: Swapchain<B>,
     acquired_image: Option<ImageIndex>,
     viewport: Viewport,
 }
 
 impl <B: hal::Backend> MonitorPresenter<B> {
-    fn new(device: &Arc<RwLock<Device<B>>>) -> Self {
+    fn new(device: &Arc<RwLock<GfxDevice<B>>>) -> Self {
         let swapchain = SwapchainState::new(
             &mut backend,
             &device);
@@ -34,7 +39,10 @@ impl <B: hal::Backend> MonitorPresenter<B> {
         let viewport = Self::create_viewport(&swapchain);
 
         Self {
-
+            device: Arc::clone(device),
+            swapchain,
+            acquired_image: None,
+            viewport,
         }
     }
 
@@ -52,23 +60,25 @@ impl <B: hal::Backend> MonitorPresenter<B> {
 }
 
 impl <B: hal::Backend> Presenter<B> for MonitorPresenter<B> {
-    fn acquire_image(&self, acquire_semaphore: B::Semaphore) -> Result<u32, String> {
-        if let Some(image_index) = self.image_index {
+    fn acquire_image(&mut self, acquire_semaphore: B::Semaphore) -> Result<u32, String> {
+        if let Some(image_index) = self.acquired_image {
             return Err(format!("image {} already acquired without presenting", image_index));
         }
 
         let image_index = self
             .swapchain
+            .swapchain
+            .unwrap()
             .acquire_image(!0, Some(acquire_semaphore), None)?;
 
-        self.image_index = Some(image_index);
+        self.acquired_image = Some(image_index);
 
         Ok(image_index)
     }
 
-    fn present(&self) -> Result<(), String> {
+    fn present(&mut self) -> Result<(), String> {
         let image_index = self
-            .image_index
+            .acquired_image
             .take()
             .ok_or(String::from("no image acquired to present to"))?;
 
@@ -78,10 +88,14 @@ impl <B: hal::Backend> Presenter<B> for MonitorPresenter<B> {
             .unwrap()
             .queue_group.queues[0];
 
-        self.swapchain.present(
-            queue,
-            image_index,
-            Some(&*image_present_semaphore))
+        self.swapchain
+            .swapchain
+            .unwrap()
+            .present(
+                queue,
+                image_index,
+                Some(&*image_present_semaphore)
+            )
     }
 }
 
@@ -94,12 +108,12 @@ struct Swapchain<B: hal::Backend> {
 }
 
 impl<B: hal::Backend> Swapchain<B> {
-    fn new(backend_state: &mut BackendState<B>, device_state: &Arc<RwLock<DeviceState<B>>>) -> Self {
-        let caps = backend_state
+    fn new(backend: &mut GfxBackend<B>, device_state: &Arc<RwLock<GfxDevice<B>>>) -> Self {
+        let caps = backend
             .surface
             .capabilities(&device_state.read().unwrap().physical_device);
 
-        let formats = backend_state
+        let formats = backend
             .surface
             .supported_formats(&device_state.read().unwrap().physical_device);
 
@@ -120,7 +134,7 @@ impl<B: hal::Backend> Swapchain<B> {
                 .write()
                 .unwrap()
                 .device
-                .create_swapchain(&mut backend_state.surface, swap_config, None)
+                .create_swapchain(&mut backend.surface, swap_config, None)
         }.expect("Can't create swapchain");
 
         Self {

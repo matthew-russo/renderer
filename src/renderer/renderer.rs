@@ -1,27 +1,11 @@
-use std::fs;
-use std::fs::File;
 use std::sync::{Arc, RwLock};
-use std::io::{BufReader};
-use std::collections::{HashMap, BTreeMap};
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap};
 
-use itertools::{Itertools};
-
-use glsl_to_spirv;
-
-use hal::{Limits, Instance};
-use hal::adapter::{Adapter, MemoryType, PhysicalDevice};
-use hal::command::{CommandBuffer, CommandBufferFlags, ClearColor, ClearDepthStencil, ClearValue, SubpassContents};
+use hal::adapter::{MemoryType};
 use hal::device::{Device};
-use hal::format::{Format, AsFormat, ChannelType, Rgba8Srgb, Swizzle, Aspects};
-use hal::pass::Subpass;
-use hal::pso::{DescriptorPool, PipelineStage, ShaderStageFlags, VertexInputRate, Viewport};
-use hal::pool::{CommandPool};
-use hal::queue::{CommandQueue, Submission, QueueFamily};
-use hal::queue::family::QueueGroup;
-use hal::window::{Extent2D, Surface, Swapchain, SwapchainConfig};
-
-use image::load as load_image;
+use hal::format::{Format, Swizzle, Aspects};
+use hal::pso::{ShaderStageFlags};
+use hal::window::{Extent2D};
 
 use cgmath::{
     Vector3,
@@ -29,20 +13,13 @@ use cgmath::{
     SquareMatrix,
 };
 
-use crate::primitives::vertex::Vertex;
-
-use crate::components::mesh::Mesh;
 use crate::primitives::uniform_buffer_object::{
     CameraUniformBufferObject,
     ObjectUniformBufferObject,
 };
-use crate::primitives::drawable::Drawable;
 use crate::components::transform::Transform;
-use crate::components::texture::Texture;
 use crate::renderer::render_key::RenderKey;
 use crate::xr::xr::VulkanXrSessionCreateInfo;
-
-pub(crate) const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 
 pub struct Renderer<B: hal::Backend> {
     backend_state: BackendState<B>,
@@ -215,29 +192,11 @@ impl<B: hal::Backend> Renderer<B> {
         };
         
         Self {
-            image_desc_pool: Some(image_desc_pool),
-            uniform_desc_pool: Some(uniform_desc_pool),
-            font_tex_desc_pool: Some(font_tex_desc_pool),
-            viewport,
-
             backend_state,
             device_state,
-            swapchain_state,
-            render_pass_state,
-            pipeline_state,
-            framebuffer_state,
-
-            image_desc_set_layout: Some(image_desc_set_layout),
-            image_states,
-
-            vertex_buffer_state: None,
-            index_buffer_state: None,
-            camera_uniform,
-            object_uniform,
 
             recreate_swapchain: false,
             resize_dims,
-            last_drawables: None,
         }
     }
 

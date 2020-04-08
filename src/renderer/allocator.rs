@@ -1,6 +1,8 @@
 use std::sync::{Arc, RwLock};
 use std::fs::File;
 use std::io::BufReader;
+use ash::vk::MemoryType;
+use crate::utils::{any_as_u8_slice, data_path};
 
 const COLOR_RANGE: hal::image::SubresourceRange = hal::image::SubresourceRange {
     aspects: Aspects::COLOR,
@@ -17,7 +19,7 @@ trait Allocator<B: hal::Backend> {
 }
 
 struct GfxAllocator<B: hal::Backend> {
-    device: Arc<RwLock<Device<B>>>,
+    device: Arc<RwLock<GfxDevice<B>>>,
 
     image_desc_pool: Option<B::DescriptorPool>,
     uniform_desc_pool: Option<B::DescriptorPool>,
@@ -25,8 +27,9 @@ struct GfxAllocator<B: hal::Backend> {
 }
 
 impl <B: hal::Backend> GfxAllocator<B> {
-    fn new(device: &Arc<RwLock<Device<B>>>) -> Self {
-        let mut image_desc_pool = device_state
+    fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
+        let mut image_desc_pool = core
+            .device
             .read()
             .unwrap()
             .device
@@ -123,7 +126,7 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         unimplemented!()
     }
 
-    fn alloc_desc_set() -> DescSet {
+    fn alloc_desc_set() -> DescSet<B> {
 
     }
 }
@@ -263,8 +266,8 @@ impl<B: hal::Backend> Drop for Buffer<B> {
 }
 
 pub(crate) struct Uniform<B: hal::Backend> {
-    buffer: Option<BufferState<B>>,
-    desc: Option<DescSet<B>>,
+    pub buffer: Option<BufferState<B>>,
+    pub desc: Option<DescSet<B>>,
 }
 
 impl<B: hal::Backend> Uniform<B> {
@@ -308,13 +311,13 @@ impl<B: hal::Backend> Uniform<B> {
 }
 
 pub(crate) struct Image<B: hal::Backend> {
-    desc_set: DescSet<B>,
-    sampler: Option<B::Sampler>,
-    image: Option<B::Image>,
-    image_view: Option<B::ImageView>,
-    image_memory: Option<B::Memory>,
-    transferred_image_fence: Option<B::Fence>,
-    device_state: Arc<RwLock<DeviceState<B>>>
+    pub desc_set: DescSet<B>,
+    pub sampler: Option<B::Sampler>,
+    pub image: Option<B::Image>,
+    pub image_view: Option<B::ImageView>,
+    pub image_memory: Option<B::Memory>,
+    pub transferred_image_fence: Option<B::Fence>,
+    pub device_state: Arc<RwLock<DeviceState<B>>>
 }
 
 // TODO -> refactor this --
@@ -322,7 +325,7 @@ pub(crate) struct Image<B: hal::Backend> {
 //      - take create_image function into account
 //
 impl<B: hal::Backend> Image<B> {
-    unsafe fn new(
+    pub unsafe fn new(
         _usage: hal::buffer::Usage,
         img_path: &String,
         sampler_desc: &hal::image::SamplerDesc,
@@ -593,8 +596,8 @@ impl<B: hal::Backend> Drop for Image<B> {
 }
 
 struct DescSet<B: hal::Backend> {
-    descriptor_set: B::DescriptorSet,
-    desc_set_layout: Arc<RwLock<DescSetLayout<B>>>,
+    pub descriptor_set: B::DescriptorSet,
+    pub desc_set_layout: Arc<RwLock<DescSetLayout<B>>>,
 }
 // vec![
 //     hal::pso::DescriptorSetWrite {

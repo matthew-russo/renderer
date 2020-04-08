@@ -103,8 +103,10 @@ impl VulkanXrSession {
             .unwrap()
             .iter()
             .map(|raw_image_ptr| {
+                use ash::vk::Handle;
+
                 gfx_backend_vulkan::native::Image {
-                    raw: vk::Image::from_raw(raw_image_ptr),
+                    raw: vk::Image::from_raw(*raw_image_ptr),
                     ty: vk::ImageType::from_raw(VK_FORMAT_R8G8B8A8_SRGB as i32),
                     flags: vk::ImageCreateFlags::empty(),
                     extent: vk::Extent3D {
@@ -183,6 +185,8 @@ impl From<(Session<Vulkan>, FrameWaiter, FrameStream<Vulkan>)> for VulkanXrSessi
             session: i.0,
             frame_waiter: i.1,
             frame_stream: i.2,
+            swapchain: None,
+            swapchain_images: None,
         }
     }
 }

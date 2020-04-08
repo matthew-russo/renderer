@@ -1,18 +1,29 @@
-use cgmath::Vector3;
+use cgmath::{Vector3, Matrix4};
 use std::sync::{Arc, RwLock};
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 
+use crate::components::mesh::Mesh;
+use crate::components::texture::Texture;
+use crate::components::transform::Transform;
+use crate::primitives::drawable::Drawable;
+use crate::primitives::uniform_buffer_object::{CameraUniformBufferObject, ObjectUniformBufferObject};
+use crate::primitives::vertex::Vertex;
 use crate::renderer::allocator::{Image, Uniform};
 use crate::renderer::render_key::RenderKey;
-use crate::primitives::drawable::Drawable;
-use crate::primitives::uniform_buffer_object::CameraUniformBufferObject;
-use crate::components::transform::Transform;
+use crate::utils::data_path;
+
+use itertools::Itertools;
+
+use hal::pool::CommandPool;
+use hal::command::CommandBuffer;
 
 trait Drawer<B: hal::Backend> {
     fn draw(&mut self, image_index: usize);
 }
 
 struct GfxDrawer<B: hal::Backend> {
+    device: GfxDevice<B>,
+
     framebuffers: Framebuffers<B>,
     render_pass: RenderPass<B>,
     pipeline: Pipeline<B>,
@@ -29,14 +40,14 @@ struct GfxDrawer<B: hal::Backend> {
     last_drawables: Option<Vec<Drawable>>,
 }
 
-impl GfxDrawer {
-    pub unsafe fn new(device: &Arc<RwLock<Device<B>>>) -> Self {
+impl <B: hal::Backend> GfxDrawer<B> {
+    pub unsafe fn new(device: &Arc<RwLock<GfxDevice<B>>>) -> Self {
         let render_pass = RenderPass::new(
             &device,
             &swapchain,
         );
 
-        let pipeline_state = Pipeline::new(
+        let pipeline = Pipeline::new(
             &device,
             render_pass.handle.as_ref().unwrap(),
             vec![
@@ -49,7 +60,17 @@ impl GfxDrawer {
         );
 
         Self {
-
+            device: Arc::clone(device),
+            framebuffers,
+            render_pass,
+            pipeline,
+            image_desc_set_layout: None,
+            image_states: HashMap::new(),
+            vertex_buffer_state: None,
+            index_buffer_state: None,
+            camera_uniform,
+            object_uniform,
+            last_drawables: None
         }
     }
 
@@ -75,23 +96,23 @@ impl GfxDrawer {
             })
             .collect::<Vec<u32>>();
 
-        let vertex_alignment = self.backend_state.adapter_state.limits.min_vertex_input_binding_stride_alignment;
+        let vertex_alignment = self.backend.adapter_state.limits.min_vertex_input_binding_stride_alignment;
         let vertex_buffer_state = BufferState::new(
-            &self.device_state,
+            &self.device,
             &vertices,
             vertex_alignment,
             65536,
             hal::buffer::Usage::VERTEX,
-            &self.backend_state.adapter_state.memory_types,
+            &self.backend.adapter_state.memory_types,
         );
 
         let index_buffer_state = BufferState::new(
-            &self.device_state,
+            &self.device,
             &indices,
             1,
             65536,
             hal::buffer::Usage::INDEX,
-            &self.backend_state.adapter_state.memory_types,
+            &self.backend.adapter_state.memory_types,
         );
 
         self.vertex_buffer_state = Some(vertex_buffer_state);
@@ -162,7 +183,7 @@ impl GfxDrawer {
             self.image_states.insert(RenderKey::from(texture), image_state);
         }
 
-        self.device_state
+        self.device
             .read()
             .unwrap()
             .device
@@ -192,12 +213,12 @@ impl GfxDrawer {
     }
 
     unsafe fn generate_cmd_buffers(&mut self , meshes_by_texture: BTreeMap<Option<Texture>, Vec<&Mesh>>) {
-        let framebuffers = self.framebuffer_state
+        let framebuffers = self.framebuffers
             .framebuffers
             .as_ref()
             .unwrap();
 
-        let command_pools = self.framebuffer_state
+        let command_pools = self.framebuffers
             .command_pools
             .as_mut()
             .unwrap();
@@ -219,7 +240,7 @@ impl GfxDrawer {
             cmd_buffer.set_viewports(0, &[self.viewport.clone()]);
             cmd_buffer.set_scissors(0, &[self.viewport.rect]);
 
-            cmd_buffer.bind_graphics_pipeline(&self.pipeline_state.pipeline.as_ref().unwrap());
+            cmd_buffer.bind_graphics_pipeline(&self.pipeline.pipeline.as_ref().unwrap());
             cmd_buffer.bind_vertex_buffers(0, Some((self.vertex_buffer_state.as_ref().unwrap().get_buffer(), 0)));
             cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView {
                 buffer: self.index_buffer_state.as_ref().unwrap().get_buffer(),
@@ -228,7 +249,7 @@ impl GfxDrawer {
             });
 
             cmd_buffer.begin_render_pass(
-                self.render_pass_state.render_pass.as_ref().unwrap(),
+                self.render_pass.render_pass.as_ref().unwrap(),
                 &framebuffer,
                 self.viewport.rect,
                 &[
@@ -245,7 +266,7 @@ impl GfxDrawer {
                 let texture_image_state = self.image_states.get(&texture_key).unwrap();
 
                 cmd_buffer.bind_graphics_descriptor_sets(
-                    &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
+                    &self.pipeline.pipeline_layout.as_ref().unwrap(),
                     2,
                     vec![ &texture_image_state.desc_set.descriptor_set ],
                     &[],
@@ -259,7 +280,7 @@ impl GfxDrawer {
                     let dynamic_offset = i as u64 * self.object_uniform.buffer.as_ref().unwrap().padded_stride;
 
                     cmd_buffer.bind_graphics_descriptor_sets(
-                        &self.pipeline_state.pipeline_layout.as_ref().unwrap(),
+                        &self.pipeline.pipeline_layout.as_ref().unwrap(),
                         0,
                         vec![
                             &self.camera_uniform.desc.as_ref().unwrap().descriptor_set,
@@ -280,7 +301,7 @@ impl GfxDrawer {
             command_buffers.push(cmd_buffer);
         }
 
-        self.framebuffer_state.command_buffers = Some(command_buffers);
+        self.framebuffers.command_buffers = Some(command_buffers);
     }
 }
 
@@ -308,25 +329,25 @@ pub fn fps_view_matrix(eye: Vector3<f32>, pitch_rad: cgmath::Rad<f32>, yaw_rad: 
 }
 
 impl <B: hal::Backend> Drawer<B> for GfxDrawer<B> {
-    fn draw(&mut self, image_index: u32) {
-        let new_ubo = self.update_camera_uniform_buffer_object(dims, cmaer_transform);
+    fn draw(&mut self, image_index: usize) {
+        let new_ubo = self.update_camera_uniform_buffer_object(dims, camera_transform);
         self.camera_uniform.buffer.as_mut().unwrap().update_data(0, &[new_ubo]);
 
         // TODO: THIS NEEDS TO BE REFACTORED
         let sem_index = self.framebuffers.next_acq_pre_pair_index();
-        let (fid, sid) = self.framebuffers.get_frame_data(Some(frame_index), Some(sem_index));
+        let (fid, sid) = self.framebuffers.get_frame_data(Some(image_index), Some(sem_index));
 
         let (framebuffer_fence, command_buffer) = fid.unwrap();
         let (image_acquired_semaphore, image_present_semaphore) = sid.unwrap();
 
-        self.device_state
+        self.device
             .read()
             .unwrap()
             .device
             .wait_for_fence(framebuffer_fence, !0)
             .unwrap();
 
-        self.device_state
+        self.device
             .read()
             .unwrap()
             .device
@@ -339,7 +360,7 @@ impl <B: hal::Backend> Drawer<B> for GfxDrawer<B> {
             signal_semaphores: std::iter::once(&*image_present_semaphore),
         };
 
-        self.device_state
+        self.device
             .write()
             .unwrap()
             .queue_group
@@ -350,12 +371,12 @@ impl <B: hal::Backend> Drawer<B> for GfxDrawer<B> {
 
 struct RenderPass<B: hal::Backend> {
     render_pass: Option<B::RenderPass>,
-    device_state: Arc<RwLock<DeviceState<B>>>
+    device: Arc<RwLock<DeviceState<B>>>
 }
 
 impl<B: hal::Backend> RenderPass<B> {
-    fn new(device_state: &Arc<RwLock<DeviceState<B>>>, swapchain_state: &SwapchainState<B>) -> Self {
-        let device = &device_state
+    fn new(device: &Arc<RwLock<DeviceState<B>>>, swapchain_state: &SwapchainState<B>) -> Self {
+        let device = &device
             .read()
             .unwrap()
             .device;
@@ -404,14 +425,14 @@ impl<B: hal::Backend> RenderPass<B> {
 
         Self {
             render_pass: Some(render_pass),
-            device_state: Arc::clone(device_state),
+            device: Arc::clone(device),
         }
     }
 }
 
 impl<B: hal::Backend> Drop for RenderPass<B> {
     fn drop(&mut self) {
-        let device = &self.device_state.read().unwrap().device;
+        let device = &self.device.read().unwrap().device;
         unsafe {
             device.destroy_render_pass(self.render_pass.take().unwrap());
         }
@@ -421,18 +442,18 @@ impl<B: hal::Backend> Drop for RenderPass<B> {
 struct Pipeline<B: hal::Backend> {
     pipeline: Option<B::GraphicsPipeline>,
     pipeline_layout: Option<B::PipelineLayout>,
-    device_state: Arc<RwLock<DeviceState<B>>>
+    device: Arc<RwLock<DeviceState<B>>>
 }
 
 impl<B: hal::Backend> Pipeline<B> {
     unsafe fn new(
-        device_state: &Arc<RwLock<DeviceState<B>>>,
+        device: &Arc<RwLock<DeviceState<B>>>,
         render_pass: &B::RenderPass,
         descriptor_set_layouts: Vec<&B::DescriptorSetLayout>,
         vertex_shader: &str,
         fragment_shader: &str
     ) -> Self {
-        let device = &device_state
+        let device = &device
             .read()
             .unwrap()
             .device;
@@ -444,19 +465,15 @@ impl<B: hal::Backend> Pipeline<B> {
             )
             .expect("Can't create pipeline layout");
 
-        let vs_module = {
-            let glsl = std::fs::read_to_string(data_path(vertex_shader)).unwrap();
-            let mut spirv_file = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Vertex).unwrap();
+        let load_shader = |shader_path, shader_type| {
+            let glsl = std::fs::read_to_string(data_path(shader_path)).unwrap();
+            let mut spirv_file = glsl_to_spirv::compile(&glsl, shader_type).unwrap();
             let spirv = hal::pso::read_spirv(&mut spirv_file).unwrap();
             device.create_shader_module(&spirv[..]).unwrap()
         };
 
-        let fs_module = {
-            let glsl = std::fs::read_to_string(data_path(fragment_shader)).unwrap();
-            let mut spirv_file = glsl_to_spirv::compile(&glsl, glsl_to_spirv::ShaderType::Fragment).unwrap();
-            let spirv = hal::pso::read_spirv(&mut spirv_file).unwrap();
-            device.create_shader_module(&spirv[..]).unwrap()
-        };
+        let vs_module = load_shader(vertex_shader, glsl_to_spirv::ShaderType::Vertex);
+        let fs_module = load_shader(frament_shader, glsl_to_spirv::ShaderType::Fragment);
 
         let pipeline = {
             let (vs_entry, fs_entry) = (
@@ -550,14 +567,14 @@ impl<B: hal::Backend> Pipeline<B> {
         Self {
             pipeline: Some(pipeline.unwrap()),
             pipeline_layout: Some(pipeline_layout),
-            device_state: device_state.clone()
+            device: device.clone()
         }
     }
 }
 
 impl<B: hal::Backend> Drop for Pipeline<B> {
     fn drop(&mut self) {
-        let device = &self.device_state.read().unwrap().device;
+        let device = &self.device.read().unwrap().device;
         unsafe {
             device.destroy_graphics_pipeline(self.pipeline.take().unwrap());
             device.destroy_pipeline_layout(self.pipeline_layout.take().unwrap());
@@ -574,17 +591,17 @@ struct Framebuffers<B: hal::Backend> {
     acquire_semaphores: Option<Vec<B::Semaphore>>,
     present_semaphores: Option<Vec<B::Semaphore>>,
     last_ref: usize,
-    device_state: Arc<RwLock<DeviceState<B>>>,
+    device: Arc<RwLock<DeviceState<B>>>,
     depth_image_stuff: Option<(B::Image, B::Memory, B::ImageView)>,
 }
 
 impl<B: hal::Backend> Framebuffers<B> {
     unsafe fn new(
-        device_state: &Arc<RwLock<DeviceState<B>>>,
+        device: &Arc<RwLock<DeviceState<B>>>,
         extent: Extent,
         images: Vec<B::Image>,
         image_format: hal::format::Format,
-        render_pass_state: &RenderPass<B>,
+        render_pass: &RenderPass<B>,
         // TODO -> Get rid of / clean up
         depth_image_stuff: (B::Image, B::Memory, B::ImageView)
     ) -> Self
@@ -601,7 +618,7 @@ impl<B: hal::Backend> Framebuffers<B> {
             let pairs = images
                 .into_iter()
                 .map(|image| {
-                    let image_view = device_state
+                    let image_view = device
                         .read()
                         .unwrap()
                         .device
@@ -621,12 +638,12 @@ impl<B: hal::Backend> Framebuffers<B> {
             let fbos = pairs
                 .iter()
                 .map(|&(_, ref image_view)| {
-                    device_state
+                    device
                         .read()
                         .unwrap()
                         .device
                         .create_framebuffer(
-                            render_pass_state.render_pass.as_ref().unwrap(),
+                            render_pass.render_pass.as_ref().unwrap(),
                             vec![image_view, &depth_image_stuff.2],
                             extent,
                         )
@@ -649,14 +666,14 @@ impl<B: hal::Backend> Framebuffers<B> {
         let mut present_semaphores: Vec<B::Semaphore> = vec![];
 
         for _ in 0..iter_count {
-            fences.push(device_state.read().unwrap().device.create_fence(true).unwrap());
+            fences.push(device.read().unwrap().device.create_fence(true).unwrap());
             command_pools.push(
-                device_state
+                device
                     .read()
                     .unwrap()
                     .device
                     .create_command_pool(
-                        device_state
+                        device
                             .read()
                             .unwrap()
                             .queue_group
@@ -666,8 +683,8 @@ impl<B: hal::Backend> Framebuffers<B> {
                     .expect("Can't create command pool"),
             );
 
-            acquire_semaphores.push(device_state.read().unwrap().device.create_semaphore().unwrap());
-            present_semaphores.push(device_state.read().unwrap().device.create_semaphore().unwrap());
+            acquire_semaphores.push(device.read().unwrap().device.create_semaphore().unwrap());
+            present_semaphores.push(device.read().unwrap().device.create_semaphore().unwrap());
         }
 
         Framebuffer {
@@ -679,7 +696,7 @@ impl<B: hal::Backend> Framebuffers<B> {
             present_semaphores: Some(present_semaphores),
             acquire_semaphores: Some(acquire_semaphores),
             last_ref: 0,
-            device_state: device_state.clone(),
+            device: device.clone(),
             depth_image_stuff: Some(depth_image_stuff),
         }
     }
@@ -728,7 +745,7 @@ impl<B: hal::Backend> Framebuffers<B> {
 
 impl<B: hal::Backend> Drop for Framebuffers<B> {
     fn drop(&mut self) {
-        let device = &self.device_state.read().unwrap().device;
+        let device = &self.device.read().unwrap().device;
 
         unsafe {
             for fence in self.framebuffer_fences.take().unwrap() {
