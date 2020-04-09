@@ -83,7 +83,7 @@ use crate::timing::Time;
 use crate::systems::rotation::Rotation;
 use crate::renderer::renderer::DIMS;
 use crate::events::event_handler::EventHandler;
-use crate::xr::xr::Xr;
+// use crate::xr::xr::Xr;
 
 use legion::Universe;
 use legion::query::{Read, Write, IntoQuery, Query};
@@ -106,10 +106,10 @@ fn main() {
 
     let event_handler = Arc::new(RwLock::new(EventHandler::new()));
 
-    let xr = Xr::init();
-    let vulkan_xr_session = unsafe {
-        xr.create_vulkan_session(renderer.vulkan_session_create_info())
-    }.unwrap();
+    // let xr = Xr::init();
+    // let vulkan_xr_session = unsafe {
+    //     xr.create_vulkan_session(renderer.vulkan_session_create_info())
+    // }.unwrap();
 
     start_engine(renderer, &event_handler);
 

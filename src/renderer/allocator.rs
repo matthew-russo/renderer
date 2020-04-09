@@ -1,8 +1,10 @@
 use std::sync::{Arc, RwLock};
 use std::fs::File;
 use std::io::BufReader;
-use ash::vk::MemoryType;
 use crate::utils::{any_as_u8_slice, data_path};
+use hal::device::Device;
+use hal::adapter::MemoryType;
+use hal::pso::DescriptorPool;
 
 const COLOR_RANGE: hal::image::SubresourceRange = hal::image::SubresourceRange {
     aspects: Aspects::COLOR,
@@ -19,7 +21,7 @@ trait Allocator<B: hal::Backend> {
 }
 
 struct GfxAllocator<B: hal::Backend> {
-    device: Arc<RwLock<GfxDevice<B>>>,
+    core: Arc<RwLock<RendererCore<B>>>,
 
     image_desc_pool: Option<B::DescriptorPool>,
     uniform_desc_pool: Option<B::DescriptorPool>,
@@ -28,7 +30,7 @@ struct GfxAllocator<B: hal::Backend> {
 
 impl <B: hal::Backend> GfxAllocator<B> {
     fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
-        let mut image_desc_pool = core
+        let image_desc_pool = core
             .device
             .read()
             .unwrap()
@@ -50,7 +52,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
             .expect("Can't create descriptor pool");
 
         // TODO -> render graph, not static
-        let mut uniform_desc_pool = device_state
+        let uniform_desc_pool = device_state
             .read()
             .unwrap()
             .device
@@ -80,7 +82,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
             )
             .expect("Can't create descriptor pool");
 
-        let mut font_tex_desc_pool = device_state
+        let font_tex_desc_pool = device_state
             .read()
             .unwrap()
             .device
@@ -97,7 +99,10 @@ impl <B: hal::Backend> GfxAllocator<B> {
             .expect("Can't create descriptor pool");
 
         Self {
-
+            core: Arc::clone(core),
+            image_desc_pool: Some(image_desc_pool),
+            uniform_desc_pool: Some(uniform_desc_pool),
+            font_tex_desc_pool: Some(font_tex_desc_pool),
         }
     }
 
@@ -127,7 +132,11 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
     }
 
     fn alloc_desc_set() -> DescSet<B> {
+        unimplemented!()
+    }
 
+    fn alloc_desc_set_layout() -> DescSetLayout<B> {
+        unimplemented!()
     }
 }
 
@@ -137,7 +146,6 @@ struct Buffer<B: hal::Backend> {
     memory_is_mapped: bool,
     size: u64,
     padded_stride: u64,
-    device_state: Arc<RwLock<DeviceState<B>>>,
 }
 
 impl<B: hal::Backend> Buffer<B> {
@@ -146,7 +154,7 @@ impl<B: hal::Backend> Buffer<B> {
     }
 
     unsafe fn new<T: Sized>(
-        device_state: &Arc<RwLock<DeviceState<B>>>,
+        core: &RendererCore<B>>,
         data_source: &[T],
         alignment: u64,
         min_size: u64,
@@ -176,7 +184,7 @@ impl<B: hal::Backend> Buffer<B> {
         }
 
         {
-            let device = &device_state.read().unwrap().device;
+            let device = &core.device.read().unwrap().device;
 
             buffer = device.create_buffer(upload_size, usage).unwrap();
             let mem_req = device.get_buffer_requirements(&buffer);
@@ -224,7 +232,6 @@ impl<B: hal::Backend> Buffer<B> {
             memory_is_mapped: false,
             size,
             padded_stride,
-            device_state: device_state.clone(),
         }
     }
 
@@ -257,7 +264,7 @@ impl<B: hal::Backend> Buffer<B> {
 
 impl<B: hal::Backend> Drop for Buffer<B> {
     fn drop(&mut self) {
-        let device = &self.device_state.read().unwrap().device;
+        let device = &self.device.read().unwrap().device;
         unsafe {
             device.destroy_buffer(self.buffer.take().unwrap());
             device.free_memory(self.buffer_memory.take().unwrap());
@@ -272,8 +279,7 @@ pub(crate) struct Uniform<B: hal::Backend> {
 
 impl<B: hal::Backend> Uniform<B> {
     unsafe fn new<T>(
-        adapter_state: &AdapterState<B>,
-        device_state: &Arc<RwLock<DeviceState<B>>>,
+        core: &RendererCore<B>,
         data: &[T],
         desc: DescSet<B>,
         binding: u32
@@ -282,9 +288,9 @@ impl<B: hal::Backend> Uniform<B> {
               T: std::fmt::Debug
     {
         let buffer = BufferState::new(
-            &device_state,
+            &core.device,
             &data,
-            adapter_state.limits.min_uniform_buffer_offset_alignment,
+            core.backend.adapter.limits.min_uniform_buffer_offset_alignment,
             65536,
             hal::buffer::Usage::UNIFORM,
             &adapter_state.memory_types
@@ -292,7 +298,7 @@ impl<B: hal::Backend> Uniform<B> {
         let buffer = Some(buffer);
 
         desc.write(
-            &mut device_state.write().unwrap().device,
+            &mut core.device.write().unwrap().device,
             vec![DescSetWrite {
                 binding,
                 array_offset: 0,
@@ -317,7 +323,6 @@ pub(crate) struct Image<B: hal::Backend> {
     pub image_view: Option<B::ImageView>,
     pub image_memory: Option<B::Memory>,
     pub transferred_image_fence: Option<B::Fence>,
-    pub device_state: Arc<RwLock<DeviceState<B>>>
 }
 
 // TODO -> refactor this --
@@ -326,18 +331,16 @@ pub(crate) struct Image<B: hal::Backend> {
 //
 impl<B: hal::Backend> Image<B> {
     pub unsafe fn new(
+        core: &mut RenderCore<B>,
         _usage: hal::buffer::Usage,
         img_path: &String,
         sampler_desc: &hal::image::SamplerDesc,
     ) -> Self {
-        let mut staging_pool = self.device_state
-            .read()
-            .unwrap()
+        let mut staging_pool = core
             .device
             .create_command_pool(
-                self.device_state
-                    .read()
-                    .unwrap()
+                core
+                    .device
                     .queue_group
                     .family,
                 hal::pool::CommandPoolCreateFlags::empty(),
@@ -345,19 +348,21 @@ impl<B: hal::Backend> Image<B> {
             .expect("Can't create staging command pool");
 
         let image_desc_set = Self::create_set(self.image_desc_set_layout.as_ref().unwrap(), self.image_desc_pool.as_mut().unwrap());
-        let row_alignment_mask = self.backend_state.adapter_state.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
+        let row_alignment_mask = core.backend.adapter.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
         let image_data = load_image_data(img_path, row_alignment_mask);
 
         let kind = hal::image::Kind::D2(img_data.width as hal::image::Size, img_data.height as hal::image::Size, 1, 1);
-        let row_alignment_mask = adapter_state.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
+        let row_alignment_mask = core.backend.adapter.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
         let image_stride = 4_usize;
         let row_pitch = (img_data.width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
         let upload_size = (img_data.height * row_pitch) as u64;
 
-        let mut image_upload_buffer = device_state.read().unwrap().device.create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC).unwrap();
-        let image_mem_reqs = device_state.read().unwrap().device.get_buffer_requirements(&image_upload_buffer);
+        let mut image_upload_buffer = core.device.device.create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC).unwrap();
+        let image_mem_reqs = core.device.device.get_buffer_requirements(&image_upload_buffer);
 
-        let upload_type = adapter_state
+        let upload_type = core
+            .backend
+            .adapter
             .memory_types
             .iter()
             .enumerate()
@@ -370,9 +375,9 @@ impl<B: hal::Backend> Image<B> {
             .into();
 
         let image_upload_memory = {
-            let memory = device_state.read().unwrap().device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
-            device_state.read().unwrap().device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
-            let mapping = device_state.read().unwrap().device.map_memory(&memory, 0..upload_size).unwrap();
+            let memory = core.device.device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
+            core.device.device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
+            let mapping = core.device.device.map_memory(&memory, 0..upload_size).unwrap();
 
             // TODO -> duplicated in load_image_data
             for y in 0..img_data.height as usize {
@@ -384,11 +389,11 @@ impl<B: hal::Backend> Image<B> {
                 );
             }
 
-            device_state.read().unwrap().device.unmap_memory(&memory);
+            core.device.device.unmap_memory(&memory);
             memory
         };
 
-        let mut image = device_state.read().unwrap().device.create_image(
+        let mut image = core.device.device.create_image(
             kind,
             1,
             img_data.format,
@@ -398,9 +403,11 @@ impl<B: hal::Backend> Image<B> {
         )
             .unwrap();
 
-        let image_req = device_state.read().unwrap().device.get_image_requirements(&image);
+        let image_req = core.device.device.get_image_requirements(&image);
 
-        let device_type = adapter_state
+        let device_type = core
+            .backend
+            .adapter
             .memory_types
             .iter()
             .enumerate()
@@ -411,10 +418,10 @@ impl<B: hal::Backend> Image<B> {
             .unwrap()
             .into();
 
-        let image_memory = device_state.read().unwrap().device.allocate_memory(device_type, image_req.size).unwrap();
-        device_state.read().unwrap().device.bind_image_memory(&image_memory, 0, &mut image).unwrap();
+        let image_memory = core.device.device.allocate_memory(device_type, image_req.size).unwrap();
+        core.device.device.bind_image_memory(&image_memory, 0, &mut image).unwrap();
 
-        let mut transferred_image_fence = device_state.read().unwrap().device.create_fence(false).expect("Can't create fence");
+        let mut transferred_image_fence = core.device.device.create_fence(false).expect("Can't create fence");
 
         let mut cmd_buffer = command_pool.allocate_one(hal::command::Level::Primary);
         cmd_buffer.begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
@@ -469,24 +476,22 @@ impl<B: hal::Backend> Image<B> {
 
         cmd_buffer.finish();
 
-        device_state
-            .write()
-            .unwrap()
+        core.device
             .queue_group
             .queues[0]
             .submit_without_semaphores(Some(&cmd_buffer), Some(&mut transferred_image_fence));
 
-        device_state
-            .write()
-            .unwrap()
+        core.device
             .device
             .wait_for_fence(&transferred_image_fence, !0)
             .unwrap();
 
-        device_state.read().unwrap().device.destroy_buffer(image_upload_buffer);
-        device_state.read().unwrap().device.free_memory(image_upload_memory);
+        core.device.device.destroy_buffer(image_upload_buffer);
+        core.device.device.free_memory(image_upload_memory);
 
-        let image_view = device_state.read().unwrap().device
+        let image_view = core
+            .device
+            .device
             .create_image_view(
                 &image,
                 hal::image::ViewKind::D2,
@@ -495,12 +500,12 @@ impl<B: hal::Backend> Image<B> {
                 COLOR_RANGE.clone(),
             ).unwrap();
 
-        let sampler = device_state.read().unwrap().device
+        let sampler = core.device.device
             .create_sampler(sampler_desc)
             .expect("Can't create sampler");
 
         desc_set.write(
-            &mut device_state.write().unwrap().device,
+            &mut core.device.device,
             vec![
                 DescSetWrite {
                     binding: 0,
@@ -521,7 +526,6 @@ impl<B: hal::Backend> Image<B> {
             image_view: Some(image_view),
             image_memory: Some(image_memory),
             transferred_image_fence: Some(transferred_image_fence),
-            device_state: device_state.clone()
         }
     }
 
@@ -581,7 +585,7 @@ impl<B: hal::Backend> Drop for Image<B> {
     fn drop(&mut self) {
         unsafe {
             let readable_desc_set_layout = self.desc_set.desc_set_layout.read().unwrap();
-            let device = &readable_desc_set_layout.device_state.read().unwrap().device;
+            let device = &readable_desc_set_layout.device.read().unwrap().device;
 
             let fence = self.transferred_image_fence.take().unwrap();
             device.wait_for_fence(&fence, !0).unwrap();
@@ -642,7 +646,6 @@ struct DescSetWrite<WI> {
 
 struct DescSetLayout<B: hal::Backend> {
     layout: Option<B::DescriptorSetLayout>,
-    device_state: Arc<RwLock<DeviceState<B>>>
 }
 
 impl<B: hal::Backend> DescSetLayout<B> {
@@ -657,14 +660,13 @@ impl<B: hal::Backend> DescSetLayout<B> {
 
         Self {
             layout: Some(layout),
-            device_state: device_state.clone()
         }
     }
 }
 
 impl<B: hal::Backend> Drop for DescSetLayout<B> {
     fn drop(&mut self) {
-        let device = &self.device_state.read().unwrap().device;
+        let device = &self.device.read().unwrap().device;
         unsafe {
             device.destroy_descriptor_set_layout(self.layout.take().unwrap());
         }

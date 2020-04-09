@@ -16,17 +16,19 @@ use itertools::Itertools;
 
 use hal::pool::CommandPool;
 use hal::command::CommandBuffer;
+use hal::pso::Viewport;
 
 trait Drawer<B: hal::Backend> {
     fn draw(&mut self, image_index: usize);
 }
 
 struct GfxDrawer<B: hal::Backend> {
-    device: GfxDevice<B>,
+    core: Arc<RwLock<RendererCore<B>>>,
 
     framebuffers: Framebuffers<B>,
     render_pass: RenderPass<B>,
     pipeline: Pipeline<B>,
+    viewport: Viewport,
 
     image_desc_set_layout: Option<Arc<RwLock<DescSetLayout<B>>>>,
     image_states: HashMap<RenderKey, Image<B>>,
@@ -41,15 +43,15 @@ struct GfxDrawer<B: hal::Backend> {
 }
 
 impl <B: hal::Backend> GfxDrawer<B> {
-    pub unsafe fn new(device: &Arc<RwLock<GfxDevice<B>>>) -> Self {
+    pub unsafe fn new(core: &Arc<RwLock<RendererCore<B>>>, viewport: Viewport) -> Self {
         let render_pass = RenderPass::new(
-            &device,
+            &core.device,
             &swapchain,
         );
 
         let pipeline = Pipeline::new(
-            &device,
-            render_pass.handle.as_ref().unwrap(),
+            &core.device,
+            render_pass.render_pass.as_ref().unwrap(),
             vec![
                 camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
                 object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
@@ -60,10 +62,11 @@ impl <B: hal::Backend> GfxDrawer<B> {
         );
 
         Self {
-            device: Arc::clone(device),
+            core: Arc::clone(core),
             framebuffers,
             render_pass,
             pipeline,
+            viewport,
             image_desc_set_layout: None,
             image_states: HashMap::new(),
             vertex_buffer_state: None,
@@ -96,23 +99,23 @@ impl <B: hal::Backend> GfxDrawer<B> {
             })
             .collect::<Vec<u32>>();
 
-        let vertex_alignment = self.backend.adapter_state.limits.min_vertex_input_binding_stride_alignment;
+        let vertex_alignment = self.core.backend.adapter_state.limits.min_vertex_input_binding_stride_alignment;
         let vertex_buffer_state = BufferState::new(
-            &self.device,
+            &self.core.device,
             &vertices,
             vertex_alignment,
             65536,
             hal::buffer::Usage::VERTEX,
-            &self.backend.adapter_state.memory_types,
+            &self.core.backend.adapter_state.memory_types,
         );
 
         let index_buffer_state = BufferState::new(
-            &self.device,
+            &self.core.device,
             &indices,
             1,
             65536,
             hal::buffer::Usage::INDEX,
-            &self.backend.adapter_state.memory_types,
+            &self.core.backend.adapter_state.memory_types,
         );
 
         self.vertex_buffer_state = Some(vertex_buffer_state);
@@ -183,7 +186,8 @@ impl <B: hal::Backend> GfxDrawer<B> {
             self.image_states.insert(RenderKey::from(texture), image_state);
         }
 
-        self.device
+        self.core
+            .device
             .read()
             .unwrap()
             .device
@@ -340,14 +344,16 @@ impl <B: hal::Backend> Drawer<B> for GfxDrawer<B> {
         let (framebuffer_fence, command_buffer) = fid.unwrap();
         let (image_acquired_semaphore, image_present_semaphore) = sid.unwrap();
 
-        self.device
+        self.core
+            .device
             .read()
             .unwrap()
             .device
             .wait_for_fence(framebuffer_fence, !0)
             .unwrap();
 
-        self.device
+        self.core
+            .device
             .read()
             .unwrap()
             .device
@@ -360,7 +366,8 @@ impl <B: hal::Backend> Drawer<B> for GfxDrawer<B> {
             signal_semaphores: std::iter::once(&*image_present_semaphore),
         };
 
-        self.device
+        self.core
+            .device
             .write()
             .unwrap()
             .queue_group

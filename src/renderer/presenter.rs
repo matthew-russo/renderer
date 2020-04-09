@@ -1,15 +1,15 @@
 use std::sync::{Arc, RwLock};
-use crate::renderer::core::GfxBackend;
-use hal::window::{Surface, Swapchain};
-
+use hal::window::{Extent2D};
+use hal::pso::Viewport;
+use crate::renderer::core::RendererCore;
 
 const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 
 type ImageIndex = u32;
 
 trait Presenter<B: hal::Backend> {
-    fn acquire_image(&self, acquire_semaphore: B::Semaphore) -> Result<ImageIndex, String>;
-    fn present(&self) -> Result<(), String>;
+    fn acquire_image(&mut self, acquire_semaphore: B::Semaphore) -> Result<ImageIndex, String>;
+    fn present(&mut self) -> Result<(), String>;
 }
 
 struct XrPresenter {
@@ -17,20 +17,17 @@ struct XrPresenter {
 }
 
 struct MonitorPresenter<B: hal::Backend> {
-    device: Arc<RwLock<GfxDevice<B>>>,
+    core: Arc<RwLock<RendererCore<B>>>,
     swapchain: Swapchain<B>,
     acquired_image: Option<ImageIndex>,
     viewport: Viewport,
 }
 
 impl <B: hal::Backend> MonitorPresenter<B> {
-    fn new(device: &Arc<RwLock<GfxDevice<B>>>) -> Self {
-        let swapchain = SwapchainState::new(
-            &mut backend,
-            &device);
-
+    fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
+        let swapchain = SwapchainState::new(core);
         let framebuffer = Framebuffer::new(
-            &device,
+            &core.device,
             &mut swapchain,
             &render_pass,
             depth_image_stuff
@@ -39,14 +36,14 @@ impl <B: hal::Backend> MonitorPresenter<B> {
         let viewport = Self::create_viewport(&swapchain);
 
         Self {
-            device: Arc::clone(device),
+            core: Arc::clone(core),
             swapchain,
             acquired_image: None,
             viewport,
         }
     }
 
-    fn create_viewport(swapchain_state: &SwapchainState<B>) -> hal::pso::Viewport {
+    fn create_viewport(swapchain_state: &Swapchain<B>) -> hal::pso::Viewport {
         hal::pso::Viewport {
             rect: hal::pso::Rect {
                 x: 0,
@@ -83,6 +80,7 @@ impl <B: hal::Backend> Presenter<B> for MonitorPresenter<B> {
             .ok_or(String::from("no image acquired to present to"))?;
 
         let queue = self
+            .core
             .device
             .write()
             .unwrap()
@@ -100,22 +98,28 @@ impl <B: hal::Backend> Presenter<B> for MonitorPresenter<B> {
 }
 
 struct Swapchain<B: hal::Backend> {
+    core: Arc<RwLock<RendererCore<B>>>,
     swapchain: Option<B::Swapchain>,
     backbuffer: Option<Vec<B::Image>>,
     format: hal::format::Format,
     extent: hal::image::Extent,
-    device_state: Arc<RwLock<DeviceState<B>>>
 }
 
 impl<B: hal::Backend> Swapchain<B> {
-    fn new(backend: &mut GfxBackend<B>, device_state: &Arc<RwLock<GfxDevice<B>>>) -> Self {
-        let caps = backend
+    fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
+        let caps = core
+            .read()
+            .unwrap()
+            .backend
             .surface
-            .capabilities(&device_state.read().unwrap().physical_device);
+            .capabilities(&core.read().unwrap().device.physical_device);
 
-        let formats = backend
+        let formats = core
+            .read()
+            .unwrap()
+            .backend
             .surface
-            .supported_formats(&device_state.read().unwrap().physical_device);
+            .supported_formats(&core.read().unwrap().device.physical_device);
 
         let format = formats.map_or(Format::Rgba8Srgb, |formats| {
             formats
@@ -130,7 +134,7 @@ impl<B: hal::Backend> Swapchain<B> {
         let extent = swap_config.extent.to_extent();
 
         let (swapchain, backbuffer) = unsafe {
-            device_state
+            core
                 .write()
                 .unwrap()
                 .device
@@ -138,11 +142,11 @@ impl<B: hal::Backend> Swapchain<B> {
         }.expect("Can't create swapchain");
 
         Self {
+            core: device_state.clone(),
             swapchain: Some(swapchain),
             backbuffer: Some(backbuffer),
             format,
             extent,
-            device_state: device_state.clone(),
         }
     }
 }
@@ -150,7 +154,7 @@ impl<B: hal::Backend> Swapchain<B> {
 impl<B: hal::Backend> Drop for Swapchain<B> {
     fn drop(&mut self) {
         unsafe {
-            self.device_state
+            self.core
                 .read()
                 .unwrap()
                 .device
