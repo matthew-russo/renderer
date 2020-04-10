@@ -91,7 +91,7 @@ impl VulkanXrSession {
             format: VK_FORMAT_R8G8B8A8_SRGB,
             sample_count,
             width: resolution.0,
-            height: resultion.1,
+            height: resolution.1,
             face_count: 1,
             array_size: 2,
             mip_count: 1,

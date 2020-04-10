@@ -1,6 +1,8 @@
 use std::sync::{Arc, RwLock};
 use hal::window::{Extent2D};
 use hal::pso::Viewport;
+use hal::device::Device;
+use hal::window::Surface;
 use crate::renderer::core::RendererCore;
 
 const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
@@ -27,7 +29,7 @@ impl <B: hal::Backend> MonitorPresenter<B> {
     fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
         let swapchain = SwapchainState::new(core);
         let framebuffer = Framebuffer::new(
-            &core.device,
+            &core.read().unwrap().device,
             &mut swapchain,
             &render_pass,
             depth_image_stuff
@@ -81,10 +83,11 @@ impl <B: hal::Backend> Presenter<B> for MonitorPresenter<B> {
 
         let queue = self
             .core
-            .device
-            .write()
+            .read()
             .unwrap()
-            .queue_group.queues[0];
+            .device
+            .queue_group
+            .queues[0];
 
         self.swapchain
             .swapchain
@@ -138,11 +141,12 @@ impl<B: hal::Backend> Swapchain<B> {
                 .write()
                 .unwrap()
                 .device
-                .create_swapchain(&mut backend.surface, swap_config, None)
+                .device
+                .create_swapchain(&mut core.read().unwrap().backend.surface, swap_config, None)
         }.expect("Can't create swapchain");
 
         Self {
-            core: device_state.clone(),
+            core: Arc::clone(core),
             swapchain: Some(swapchain),
             backbuffer: Some(backbuffer),
             format,
@@ -157,6 +161,7 @@ impl<B: hal::Backend> Drop for Swapchain<B> {
             self.core
                 .read()
                 .unwrap()
+                .device
                 .device
                 .destroy_swapchain(self.swapchain.take().unwrap());
         }

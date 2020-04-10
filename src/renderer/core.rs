@@ -2,9 +2,9 @@ use hal::adapter::{MemoryType, PhysicalDevice};
 use hal::Instance;
 use hal::queue::QueueFamily;
 
-struct RendererCore<B: hal::Backend> {
-    backend: GfxBackend<B>,
-    device: GfxDevice<B>,
+pub(crate) struct RendererCore<B: hal::Backend> {
+    pub backend: GfxBackend<B>,
+    pub device: GfxDevice<B>,
 }
 
 impl<B: hal::Backend> RendererCore<B> {
@@ -26,9 +26,9 @@ impl<B: hal::Backend> RendererCore<B> {
 }
 
 struct GfxAdapter<B: hal::Backend> {
-    adapter: Option<hal::adapter::Adapter<B>>,
-    memory_types: Vec<MemoryType>,
-    limits: hal::Limits,
+    pub adapter: Option<hal::adapter::Adapter<B>>,
+    pub memory_types: Vec<MemoryType>,
+    pub limits: hal::Limits,
 }
 
 impl <B: hal::Backend> GfxAdapter<B> {
@@ -62,18 +62,18 @@ impl <B: hal::Backend> GfxAdapter<B> {
 
 pub struct GfxBackend<B: hal::Backend> {
     pub surface: B::Surface,
-    adapter: GfxAdapter<B>,
+    pub adapter: GfxAdapter<B>,
 
     #[cfg(any(feature = "vulkan", feature = "dx11", feature = "dx12", feature = "metal"))]
     #[allow(dead_code)]
-    window: winit::window::Window,
+    pub window: winit::window::Window,
 }
 
-struct GfxDevice<B: hal::Backend> {
-    device: B::Device,
-    physical_device: B::PhysicalDevice,
-    queue_group: hal::queue::QueueGroup<B>,
-    queue_family_index: Option<u32>,
+pub(crate) struct GfxDevice<B: hal::Backend> {
+    pub device: B::Device,
+    pub physical_device: B::PhysicalDevice,
+    pub queue_group: hal::queue::QueueGroup<B>,
+    pub queue_family_index: Option<u32>,
 }
 
 impl <B: hal::Backend> GfxDevice<B> {

@@ -1,15 +1,18 @@
 use cgmath::{Vector3, Matrix4};
 use std::sync::{Arc, RwLock};
 use std::collections::{HashMap, BTreeMap};
+use std::ops::DerefMut;
 
+use crate::renderer::allocator::COLOR_RANGE;
 use crate::components::mesh::Mesh;
 use crate::components::texture::Texture;
 use crate::components::transform::Transform;
 use crate::primitives::drawable::Drawable;
 use crate::primitives::uniform_buffer_object::{CameraUniformBufferObject, ObjectUniformBufferObject};
 use crate::primitives::vertex::Vertex;
-use crate::renderer::allocator::{Image, Uniform};
+use crate::renderer::allocator::{Image, Uniform, Buffer};
 use crate::renderer::render_key::RenderKey;
+use crate::renderer::core::RendererCore;
 use crate::utils::data_path;
 
 use itertools::Itertools;
@@ -17,6 +20,9 @@ use itertools::Itertools;
 use hal::pool::CommandPool;
 use hal::command::CommandBuffer;
 use hal::pso::Viewport;
+use hal::device::Device;
+use hal::queue::CommandQueue;
+
 
 trait Drawer<B: hal::Backend> {
     fn draw(&mut self, image_index: usize);
@@ -99,23 +105,23 @@ impl <B: hal::Backend> GfxDrawer<B> {
             })
             .collect::<Vec<u32>>();
 
-        let vertex_alignment = self.core.backend.adapter_state.limits.min_vertex_input_binding_stride_alignment;
+        let vertex_alignment = self.core.read().unwrap().backend.adapter_state.limits.min_vertex_input_binding_stride_alignment;
         let vertex_buffer_state = BufferState::new(
-            &self.core.device,
+            &self.core.read().unwrap().device,
             &vertices,
             vertex_alignment,
             65536,
             hal::buffer::Usage::VERTEX,
-            &self.core.backend.adapter_state.memory_types,
+            &self.core.read().unwrap().backend.adapter_state.memory_types,
         );
 
         let index_buffer_state = BufferState::new(
-            &self.core.device,
+            &self.core.read().unwrap().device,
             &indices,
             1,
             65536,
             hal::buffer::Usage::INDEX,
-            &self.core.backend.adapter_state.memory_types,
+            &self.core.read().unwrap().backend.adapter.adapter.memory_types,
         );
 
         self.vertex_buffer_state = Some(vertex_buffer_state);
@@ -179,6 +185,7 @@ impl <B: hal::Backend> GfxDrawer<B> {
 
         for texture in new_textures.into_iter() {
             let image = Image::new(
+                self.core.read().unwrap().deref_mut(),
                 hal::buffer::Usage::TRANSFER_SRC,
                 &texture.path,
                 &hal::image::SamplerDesc::new(hal::image::Filter::Linear, hal::image::WrapMode::Clamp),
@@ -186,10 +193,11 @@ impl <B: hal::Backend> GfxDrawer<B> {
             self.image_states.insert(RenderKey::from(texture), image_state);
         }
 
-        self.core
-            .device
+        self
+            .core
             .read()
             .unwrap()
+            .device
             .device
             .destroy_command_pool(staging_pool);
     }
@@ -257,8 +265,8 @@ impl <B: hal::Backend> GfxDrawer<B> {
                 &framebuffer,
                 self.viewport.rect,
                 &[
-                    ClearValue { color: ClearColor { float32: [0.7, 0.2, 0.0, 1.0] } },
-                    ClearValue { depth_stencil: ClearDepthStencil {depth: 1.0, stencil: 0} }
+                    hal::command::ClearValue { color: hal::command::ClearColor { float32: [0.7, 0.2, 0.0, 1.0] } },
+                    hal::command::ClearValue { depth_stencil: hal::command::ClearDepthStencil {depth: 1.0, stencil: 0} }
                 ],
                 SubpassContents::Inline
             );
@@ -333,7 +341,7 @@ pub fn fps_view_matrix(eye: Vector3<f32>, pitch_rad: cgmath::Rad<f32>, yaw_rad: 
 }
 
 impl <B: hal::Backend> Drawer<B> for GfxDrawer<B> {
-    fn draw(&mut self, image_index: usize) {
+    unsafe fn draw(&mut self, image_index: usize) {
         let new_ubo = self.update_camera_uniform_buffer_object(dims, camera_transform);
         self.camera_uniform.buffer.as_mut().unwrap().update_data(0, &[new_ubo]);
 
@@ -344,32 +352,35 @@ impl <B: hal::Backend> Drawer<B> for GfxDrawer<B> {
         let (framebuffer_fence, command_buffer) = fid.unwrap();
         let (image_acquired_semaphore, image_present_semaphore) = sid.unwrap();
 
-        self.core
-            .device
+        self
+            .core
             .read()
             .unwrap()
+            .device
             .device
             .wait_for_fence(framebuffer_fence, !0)
             .unwrap();
 
-        self.core
-            .device
+        self
+            .core
             .read()
             .unwrap()
+            .device
             .device
             .reset_fence(framebuffer_fence)
             .unwrap();
 
-        let submission = Submission {
+        let submission = hal::queue::Submission {
             command_buffers: std::iter::once(&*command_buffer),
             wait_semaphores: std::iter::once((&*image_acquired_semaphore, PipelineStage::BOTTOM_OF_PIPE)),
             signal_semaphores: std::iter::once(&*image_present_semaphore),
         };
 
-        self.core
-            .device
+        self
+            .core
             .write()
             .unwrap()
+            .device
             .queue_group
             .queues[0]
             .submit(submission, Some(framebuffer_fence));
@@ -377,19 +388,20 @@ impl <B: hal::Backend> Drawer<B> for GfxDrawer<B> {
 }
 
 struct RenderPass<B: hal::Backend> {
+    core: Arc<RwLock<RendererCore<B>>>,
     render_pass: Option<B::RenderPass>,
-    device: Arc<RwLock<DeviceState<B>>>
 }
 
 impl<B: hal::Backend> RenderPass<B> {
-    fn new(device: &Arc<RwLock<DeviceState<B>>>, swapchain_state: &SwapchainState<B>) -> Self {
-        let device = &device
+    fn new(core: &Arc<RwLock<RendererCore<B>>>, swapchain: &Swapchain<B>) -> Self {
+        let device = &core
             .read()
             .unwrap()
+            .device
             .device;
 
         let color_attachment = hal::pass::Attachment {
-            format: Some(swapchain_state.format),
+            format: Some(swapchain.format),
             samples: 1,
             ops: hal::pass::AttachmentOps::new(
                 hal::pass::AttachmentLoadOp::Clear,
@@ -431,8 +443,8 @@ impl<B: hal::Backend> RenderPass<B> {
         }.expect("Can't create render pass");
 
         Self {
+            core: Arc::clone(core),
             render_pass: Some(render_pass),
-            device: Arc::clone(device),
         }
     }
 }
@@ -447,22 +459,23 @@ impl<B: hal::Backend> Drop for RenderPass<B> {
 }
 
 struct Pipeline<B: hal::Backend> {
+    core: Arc<RwLock<RendererCore<B>>>
     pipeline: Option<B::GraphicsPipeline>,
     pipeline_layout: Option<B::PipelineLayout>,
-    device: Arc<RwLock<DeviceState<B>>>
 }
 
 impl<B: hal::Backend> Pipeline<B> {
     unsafe fn new(
-        device: &Arc<RwLock<DeviceState<B>>>,
+        core: &Arc<RwLock<RendererCore<B>>>,
         render_pass: &B::RenderPass,
         descriptor_set_layouts: Vec<&B::DescriptorSetLayout>,
         vertex_shader: &str,
         fragment_shader: &str
     ) -> Self {
-        let device = &device
+        let device = &core
             .read()
             .unwrap()
+            .device
             .device;
 
         let pipeline_layout = device
@@ -480,7 +493,7 @@ impl<B: hal::Backend> Pipeline<B> {
         };
 
         let vs_module = load_shader(vertex_shader, glsl_to_spirv::ShaderType::Vertex);
-        let fs_module = load_shader(frament_shader, glsl_to_spirv::ShaderType::Fragment);
+        let fs_module = load_shader(fragment_shader, glsl_to_spirv::ShaderType::Fragment);
 
         let pipeline = {
             let (vs_entry, fs_entry) = (
@@ -504,7 +517,7 @@ impl<B: hal::Backend> Pipeline<B> {
                 fragment: Some(fs_entry),
             };
 
-            let subpass = Subpass {
+            let subpass = hal::pass::Subpass {
                 index: 0,
                 main_pass: render_pass,
             };
@@ -572,9 +585,9 @@ impl<B: hal::Backend> Pipeline<B> {
         device.destroy_shader_module(fs_module);
 
         Self {
+            core: Arc::clone(core),
             pipeline: Some(pipeline.unwrap()),
             pipeline_layout: Some(pipeline_layout),
-            device: device.clone()
         }
     }
 }
@@ -590,6 +603,7 @@ impl<B: hal::Backend> Drop for Pipeline<B> {
 }
 
 struct Framebuffers<B: hal::Backend> {
+    core Arc<RwLock<RendererCore<B>>>,
     framebuffers: Option<Vec<B::Framebuffer>>,
     framebuffer_fences: Option<Vec<B::Fence>>,
     command_pools: Option<Vec<B::CommandPool>>,
@@ -598,14 +612,13 @@ struct Framebuffers<B: hal::Backend> {
     acquire_semaphores: Option<Vec<B::Semaphore>>,
     present_semaphores: Option<Vec<B::Semaphore>>,
     last_ref: usize,
-    device: Arc<RwLock<DeviceState<B>>>,
     depth_image_stuff: Option<(B::Image, B::Memory, B::ImageView)>,
 }
 
 impl<B: hal::Backend> Framebuffers<B> {
     unsafe fn new(
-        device: &Arc<RwLock<DeviceState<B>>>,
-        extent: Extent,
+        core: &Arc<RwLock<RendererCore<B>>>,
+        extent: hal::image::Extent,
         images: Vec<B::Image>,
         image_format: hal::format::Format,
         render_pass: &RenderPass<B>,
@@ -616,18 +629,13 @@ impl<B: hal::Backend> Framebuffers<B> {
         // TODO -> create depth image for each frame
 
         let (frame_images, framebuffers) = {
-            let extent = hal::image::Extent {
-                width: extent.width as _,
-                height: extent.height as _,
-                depth: 1,
-            };
-
             let pairs = images
                 .into_iter()
                 .map(|image| {
-                    let image_view = device
+                    let image_view = core
                         .read()
                         .unwrap()
+                        .device
                         .device
                         .create_image_view(
                             &image,
@@ -645,9 +653,10 @@ impl<B: hal::Backend> Framebuffers<B> {
             let fbos = pairs
                 .iter()
                 .map(|&(_, ref image_view)| {
-                    device
+                    core.
                         .read()
                         .unwrap()
+                        .device
                         .device
                         .create_framebuffer(
                             render_pass.render_pass.as_ref().unwrap(),
@@ -673,16 +682,18 @@ impl<B: hal::Backend> Framebuffers<B> {
         let mut present_semaphores: Vec<B::Semaphore> = vec![];
 
         for _ in 0..iter_count {
-            fences.push(device.read().unwrap().device.create_fence(true).unwrap());
+            fences.push(core.read().unwrap().device.device.create_fence(true).unwrap());
             command_pools.push(
-                device
+                core.
                     .read()
                     .unwrap()
                     .device
+                    .device
                     .create_command_pool(
-                        device
+                        core.
                             .read()
                             .unwrap()
+                            .device
                             .queue_group
                             .family,
                         hal::pool::CommandPoolCreateFlags::empty(),
@@ -690,11 +701,12 @@ impl<B: hal::Backend> Framebuffers<B> {
                     .expect("Can't create command pool"),
             );
 
-            acquire_semaphores.push(device.read().unwrap().device.create_semaphore().unwrap());
-            present_semaphores.push(device.read().unwrap().device.create_semaphore().unwrap());
+            acquire_semaphores.push(core.read().unwrap().device.device.create_semaphore().unwrap());
+            present_semaphores.push(core.read().unwrap().device.device.create_semaphore().unwrap());
         }
 
-        Framebuffer {
+        Self {
+            core: Arc::clone(core),
             frame_images: Some(frame_images),
             framebuffers: Some(framebuffers),
             framebuffer_fences: Some(fences),
@@ -703,7 +715,6 @@ impl<B: hal::Backend> Framebuffers<B> {
             present_semaphores: Some(present_semaphores),
             acquire_semaphores: Some(acquire_semaphores),
             last_ref: 0,
-            device: device.clone(),
             depth_image_stuff: Some(depth_image_stuff),
         }
     }
