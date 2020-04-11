@@ -69,7 +69,6 @@ use rand::Rng;
 
 use cgmath::Vector3;
 
-use crate::renderer::renderer::{Renderer, create_backend};
 use crate::components::mesh::Mesh;
 use crate::components::transform::Transform;
 use crate::components::color::Color;
@@ -81,7 +80,6 @@ use crate::primitives::drawable::Drawable;
 use crate::primitives::uniform_buffer_object::ObjectUniformBufferObject;
 use crate::timing::Time;
 use crate::systems::rotation::Rotation;
-use crate::renderer::renderer::DIMS;
 use crate::events::event_handler::EventHandler;
 // use crate::xr::xr::Xr;
 
@@ -89,12 +87,16 @@ use legion::Universe;
 use legion::query::{Read, Write, IntoQuery, Query};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::ControlFlow;
+use crate::renderer::presenter::{MonitorPresenter, XrPresenter};
+use crate::renderer::allocator::GfxAllocator;
+use crate::renderer::core::RendererCore;
+use crate::renderer::drawer::GfxDrawer;
 
 fn main() {
     env_logger::init();
 
     let event_loop = winit::event_loop::EventLoop::new();
-    let renderer_core = Arc::new(RwLock::new(RendererCore::new(event_loop));
+    let renderer_core = Arc::new(RwLock::new(RendererCore::new(event_loop)));
     let renderer_allocator = GfxAllocator::new(&renderer_core);
     let renderer_drawer = GfxDrawer::new();
 

@@ -1,12 +1,14 @@
+
+use crate::utils::{any_as_u8_slice, data_path};
+use crate::renderer::core::RendererCore;
 use std::sync::{Arc, RwLock};
 use std::fs::File;
 use std::io::BufReader;
-use crate::utils::{any_as_u8_slice, data_path};
 use hal::device::Device;
 use hal::adapter::MemoryType;
 
 pub const COLOR_RANGE: hal::image::SubresourceRange = hal::image::SubresourceRange {
-    aspects: Aspects::COLOR,
+    aspects: hal::format::Aspects::COLOR,
     levels: 0..1,
     layers: 0..1,
 };
@@ -19,7 +21,7 @@ trait Allocator<B: hal::Backend> {
     fn alloc_desc_set() -> DescSet<B>;
 }
 
-struct GfxAllocator<B: hal::Backend> {
+pub(crate) struct GfxAllocator<B: hal::Backend> {
     core: Arc<RwLock<RendererCore<B>>>,
 
     image_desc_pool: Option<B::DescriptorPool>,
@@ -28,11 +30,11 @@ struct GfxAllocator<B: hal::Backend> {
 }
 
 impl <B: hal::Backend> GfxAllocator<B> {
-    fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
+    unsafe fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
         let image_desc_pool = core
-            .device
             .read()
             .unwrap()
+            .device
             .device
             .create_descriptor_pool(
                 10,
@@ -51,9 +53,10 @@ impl <B: hal::Backend> GfxAllocator<B> {
             .expect("Can't create descriptor pool");
 
         // TODO -> render graph, not static
-        let uniform_desc_pool = device_state
+        let uniform_desc_pool = core
             .read()
             .unwrap()
+            .device
             .device
             .create_descriptor_pool(
                 2,
@@ -81,9 +84,10 @@ impl <B: hal::Backend> GfxAllocator<B> {
             )
             .expect("Can't create descriptor pool");
 
-        let font_tex_desc_pool = device_state
+        let font_tex_desc_pool = core
             .read()
             .unwrap()
+            .device
             .device
             .create_descriptor_pool(
                 10,
@@ -140,7 +144,7 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
     }
 }
 
-struct Buffer<B: hal::Backend> {
+pub(crate) struct Buffer<B: hal::Backend> {
     core: Arc<RwLock<RendererCore<B>>>,
     buffer: Option<B::Buffer>,
     buffer_memory: Option<B::Memory>,
@@ -150,11 +154,11 @@ struct Buffer<B: hal::Backend> {
 }
 
 impl<B: hal::Backend> Buffer<B> {
-    fn get_buffer(&self) -> &B::Buffer {
+    pub fn get_buffer(&self) -> &B::Buffer {
         self.buffer.as_ref().unwrap()
     }
 
-    unsafe fn new<T: Sized>(
+    pub unsafe fn new<T: Sized>(
         core: &Arc<RwLock<RendererCore<B>>>,
         data_source: &[T],
         alignment: u64,
@@ -275,13 +279,14 @@ impl<B: hal::Backend> Drop for Buffer<B> {
 }
 
 pub(crate) struct Uniform<B: hal::Backend> {
-    pub buffer: Option<BufferState<B>>,
+    pub core: Arc<RwLock<RendererCore<B>>>,
+    pub buffer: Option<Buffer<B>>,
     pub desc: Option<DescSet<B>>,
 }
 
 impl<B: hal::Backend> Uniform<B> {
     unsafe fn new<T>(
-        core: &RendererCore<B>,
+        core: &Arc<RwLock<RendererCore<B>>>,
         data: &[T],
         desc: DescSet<B>,
         binding: u32
@@ -289,18 +294,17 @@ impl<B: hal::Backend> Uniform<B> {
         where T: Copy,
               T: std::fmt::Debug
     {
-        let buffer = BufferState::new(
-            &core.device,
+        let buffer = Some(Buffer::new(
+            &core.read().unwrap().device,
             &data,
-            core.backend.adapter.limits.min_uniform_buffer_offset_alignment,
+            core.read().unwrap().backend.adapter.limits.min_uniform_buffer_offset_alignment,
             65536,
             hal::buffer::Usage::UNIFORM,
-            &adapter_state.memory_types
-        );
-        let buffer = Some(buffer);
+            &core.read().unwrap().backend.adapter.memory_types
+        ));
 
         desc.write(
-            &mut core.device.write().unwrap().device,
+            &mut core.read().unwrap().device.device,
             vec![DescSetWrite {
                 binding,
                 array_offset: 0,
@@ -312,6 +316,7 @@ impl<B: hal::Backend> Uniform<B> {
         );
 
         Self {
+            core: Arc::clone(core),
             buffer,
             desc: Some(desc)
         }
@@ -334,7 +339,7 @@ pub(crate) struct Image<B: hal::Backend> {
 //
 impl<B: hal::Backend> Image<B> {
     pub unsafe fn new(
-        core: &Arc<RwLock<RenderCore<B>>>,
+        core: &Arc<RwLock<RendererCore<B>>>,
         _usage: hal::buffer::Usage,
         img_path: &String,
         sampler_desc: &hal::image::SamplerDesc,
@@ -356,11 +361,11 @@ impl<B: hal::Backend> Image<B> {
         let row_alignment_mask = core.read().unwrap().backend.adapter.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
         let image_data = load_image_data(img_path, row_alignment_mask);
 
-        let kind = hal::image::Kind::D2(img_data.width as hal::image::Size, img_data.height as hal::image::Size, 1, 1);
+        let kind = hal::image::Kind::D2(image_data.width as hal::image::Size, image_data.height as hal::image::Size, 1, 1);
         let row_alignment_mask = core.read().unwrap().backend.adapter.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
         let image_stride = 4_usize;
-        let row_pitch = (img_data.width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
-        let upload_size = (img_data.height * row_pitch) as u64;
+        let row_pitch = (image_data.width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
+        let upload_size = (image_data.height * row_pitch) as u64;
 
         let mut image_upload_buffer = core.read().unwrap().device.device.create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC).unwrap();
         let image_mem_reqs = core.read().unwrap().device.device.get_buffer_requirements(&image_upload_buffer);
@@ -387,12 +392,12 @@ impl<B: hal::Backend> Image<B> {
             let mapping = core.device.device.map_memory(&memory, 0..upload_size).unwrap();
 
             // TODO -> duplicated in load_image_data
-            for y in 0..img_data.height as usize {
-                let row = &(*img_data.data)[y * (img_data.width as usize) * image_stride..(y+1) * (img_data.width as usize) * image_stride];
+            for y in 0..image_data.height as usize {
+                let row = &(*image_data.data)[y * (image_data.width as usize) * image_stride..(y+1) * (image_data.width as usize) * image_stride];
                 std::ptr::copy_nonoverlapping(
                     row.as_ptr(),
                     mapping.offset(y as isize * row_pitch as isize),
-                    img_data.width as usize * image_stride
+                    image_data.width as usize * image_stride
                 );
             }
 
@@ -403,7 +408,7 @@ impl<B: hal::Backend> Image<B> {
         let mut image = core.read().unwrap().device.device.create_image(
             kind,
             1,
-            img_data.format,
+            image_data.format,
             hal::image::Tiling::Optimal,
             hal::image::Usage::TRANSFER_DST | hal::image::Usage::SAMPLED,
             hal::image::ViewCapabilities::empty(),
@@ -433,7 +438,7 @@ impl<B: hal::Backend> Image<B> {
         let mut transferred_image_fence = core.read().unwrap().device.device.create_fence(false).expect("Can't create fence");
 
         let mut cmd_buffer = command_pool.allocate_one(hal::command::Level::Primary);
-        cmd_buffer.begin_primary(CommandBufferFlags::ONE_TIME_SUBMIT);
+        cmd_buffer.begin_primary(hal::command::CommandBufferFlags::ONE_TIME_SUBMIT);
 
         let image_barrier = hal::memory::Barrier::Image {
             states: (hal::image::Access::empty(), hal::image::Layout::Undefined)..(hal::image::Access::TRANSFER_WRITE, hal::image::Layout::TransferDstOptimal),
@@ -443,7 +448,7 @@ impl<B: hal::Backend> Image<B> {
         };
 
         cmd_buffer.pipeline_barrier(
-            PipelineStage::TOP_OF_PIPE..PipelineStage::TRANSFER,
+            hal::pso::PipelineStage::TOP_OF_PIPE..hal::pso::PipelineStage::TRANSFER,
             hal::memory::Dependencies::empty(),
             &[image_barrier],
         );
@@ -455,16 +460,16 @@ impl<B: hal::Backend> Image<B> {
             &[hal::command::BufferImageCopy {
                 buffer_offset: 0,
                 buffer_width: row_pitch / (image_stride as u32),
-                buffer_height: img_data.height as u32,
+                buffer_height: image_data.height as u32,
                 image_layers: hal::image::SubresourceLayers {
-                    aspects: Aspects::COLOR,
+                    aspects: hal::format::Aspects::COLOR,
                     level: 0,
                     layers: 0..1,
                 },
                 image_offset: hal::image::Offset { x: 0, y: 0, z: 0 },
                 image_extent: hal::image::Extent {
-                    width: img_data.width,
-                    height: img_data.height,
+                    width: image_data.width,
+                    height: image_data.height,
                     depth: 1,
                 },
             }],
@@ -478,7 +483,7 @@ impl<B: hal::Backend> Image<B> {
         };
 
         cmd_buffer.pipeline_barrier(
-            PipelineStage::TRANSFER..PipelineStage::FRAGMENT_SHADER,
+            hal::pso::PipelineStage::TRANSFER..hal::pso::PipelineStage::FRAGMENT_SHADER,
             hal::memory::Dependencies::empty(),
             &[image_barrier],
         );
@@ -512,8 +517,8 @@ impl<B: hal::Backend> Image<B> {
             .create_image_view(
                 &image,
                 hal::image::ViewKind::D2,
-                img_data.format,
-                Swizzle::NO,
+                image_data.format,
+                hal::format::Swizzle::NO,
                 COLOR_RANGE.clone(),
             ).unwrap();
 
@@ -572,7 +577,7 @@ struct ImageData {
 fn load_image_data(img_path: &str, row_alignment_mask: u32) -> ImageData {
     let img_file = File::open(data_path(img_path)).unwrap();
     let img_reader = BufReader::new(img_file);
-    let img = load_image(img_reader, image::JPEG)
+    let img = image::load_image(img_reader, image::JPEG)
         .unwrap()
         .to_rgba();
 
@@ -597,7 +602,7 @@ fn load_image_data(img_path: &str, row_alignment_mask: u32) -> ImageData {
         width,
         height,
         data,
-        format: Rgba8Srgb::SELF,
+        format: hal::format::Rgba8Srgb::SELF,
     };
 
     return image_data;

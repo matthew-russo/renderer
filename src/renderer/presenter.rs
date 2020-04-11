@@ -14,11 +14,11 @@ trait Presenter<B: hal::Backend> {
     fn present(&mut self) -> Result<(), String>;
 }
 
-struct XrPresenter {
+pub(crate) struct XrPresenter {
 
 }
 
-struct MonitorPresenter<B: hal::Backend> {
+pub(crate) struct MonitorPresenter<B: hal::Backend> {
     core: Arc<RwLock<RendererCore<B>>>,
     swapchain: Swapchain<B>,
     acquired_image: Option<ImageIndex>,
@@ -27,8 +27,8 @@ struct MonitorPresenter<B: hal::Backend> {
 
 impl <B: hal::Backend> MonitorPresenter<B> {
     fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
-        let swapchain = SwapchainState::new(core);
-        let framebuffer = Framebuffer::new(
+        let swapchain = Swapchain::new(core);
+        let framebuffer = Framebuffers::new(
             &core.read().unwrap().device,
             &mut swapchain,
             &render_pass,
@@ -124,15 +124,15 @@ impl<B: hal::Backend> Swapchain<B> {
             .surface
             .supported_formats(&core.read().unwrap().device.physical_device);
 
-        let format = formats.map_or(Format::Rgba8Srgb, |formats| {
+        let format = formats.map_or(hal::format::Format::Rgba8Srgb, |formats| {
             formats
                 .iter()
-                .find(|format| format.base_format().1 == ChannelType::Srgb)
+                .find(|format| format.base_format().1 == hal::format::ChannelType::Srgb)
                 .map(|format| *format)
                 .unwrap_or(formats[0])
         });
 
-        let swap_config = SwapchainConfig::from_caps(&caps, format, DIMS);
+        let swap_config = hal::window::SwapchainConfig::from_caps(&caps, format, DIMS);
 
         let extent = swap_config.extent.to_extent();
 

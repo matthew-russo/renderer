@@ -4,13 +4,10 @@ use std::collections::{HashMap, BTreeMap};
 use std::ops::DerefMut;
 
 use crate::renderer::allocator::COLOR_RANGE;
-use crate::components::mesh::Mesh;
-use crate::components::texture::Texture;
-use crate::components::transform::Transform;
-use crate::primitives::drawable::Drawable;
+use crate::components::{mesh::Mesh, texture::Texture, transform::Transform};
+use crate::primitives::{drawable::Drawable, vertex::Vertex};
 use crate::primitives::uniform_buffer_object::{CameraUniformBufferObject, ObjectUniformBufferObject};
-use crate::primitives::vertex::Vertex;
-use crate::renderer::allocator::{Image, Uniform, Buffer};
+use crate::renderer::allocator::{Image, Uniform, Buffer, DescSet, DescSetLayout};
 use crate::renderer::render_key::RenderKey;
 use crate::renderer::core::RendererCore;
 use crate::utils::data_path;
@@ -28,7 +25,7 @@ trait Drawer<B: hal::Backend> {
     fn draw(&mut self, image_index: usize);
 }
 
-struct GfxDrawer<B: hal::Backend> {
+pub(crate) struct GfxDrawer<B: hal::Backend> {
     core: Arc<RwLock<RendererCore<B>>>,
 
     framebuffers: Framebuffers<B>,
@@ -37,10 +34,10 @@ struct GfxDrawer<B: hal::Backend> {
     viewport: Viewport,
 
     image_desc_set_layout: Option<Arc<RwLock<DescSetLayout<B>>>>,
-    image_states: HashMap<RenderKey, Image<B>>,
+    images: HashMap<RenderKey, Image<B>>,
 
-    vertex_buffer_state: Option<Buffer<B>>,
-    index_buffer_state: Option<Buffer<B>>,
+    vertex_buffer: Option<Buffer<B>>,
+    index_buffer: Option<Buffer<B>>,
 
     camera_uniform: Uniform<B>,
     object_uniform: Uniform<B>,
@@ -51,12 +48,12 @@ struct GfxDrawer<B: hal::Backend> {
 impl <B: hal::Backend> GfxDrawer<B> {
     pub unsafe fn new(core: &Arc<RwLock<RendererCore<B>>>, viewport: Viewport) -> Self {
         let render_pass = RenderPass::new(
-            &core.device,
+            core,
             &swapchain,
         );
 
         let pipeline = Pipeline::new(
-            &core.device,
+            core,
             render_pass.render_pass.as_ref().unwrap(),
             vec![
                 camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
@@ -74,9 +71,9 @@ impl <B: hal::Backend> GfxDrawer<B> {
             pipeline,
             viewport,
             image_desc_set_layout: None,
-            image_states: HashMap::new(),
-            vertex_buffer_state: None,
-            index_buffer_state: None,
+            images: HashMap::new(),
+            vertex_buffer: None,
+            index_buffer: None,
             camera_uniform,
             object_uniform,
             last_drawables: None
@@ -105,27 +102,27 @@ impl <B: hal::Backend> GfxDrawer<B> {
             })
             .collect::<Vec<u32>>();
 
-        let vertex_alignment = self.core.read().unwrap().backend.adapter_state.limits.min_vertex_input_binding_stride_alignment;
-        let vertex_buffer_state = BufferState::new(
+        let vertex_alignment = self.core.read().unwrap().backend.adapter.limits.min_vertex_input_binding_stride_alignment;
+        let vertex_buffer = Buffer::new(
             &self.core.read().unwrap().device,
             &vertices,
             vertex_alignment,
             65536,
             hal::buffer::Usage::VERTEX,
-            &self.core.read().unwrap().backend.adapter_state.memory_types,
+            &self.core.read().unwrap().backend.adapter.memory_types,
         );
 
-        let index_buffer_state = BufferState::new(
+        let index_buffer = Buffer::new(
             &self.core.read().unwrap().device,
             &indices,
             1,
             65536,
             hal::buffer::Usage::INDEX,
-            &self.core.read().unwrap().backend.adapter.adapter.memory_types,
+            &self.core.read().unwrap().backend.adapter.memory_types,
         );
 
-        self.vertex_buffer_state = Some(vertex_buffer_state);
-        self.index_buffer_state = Some(index_buffer_state);
+        self.vertex_buffer = Some(vertex_buffer);
+        self.index_buffer = Some(index_buffer);
     }
 
     pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>) {
@@ -136,7 +133,7 @@ impl <B: hal::Backend> GfxDrawer<B> {
         println!("UBOs: {:?}", ubos);
         self.map_uniform_data(ubos);
 
-        self.generate_image_states(
+        self.generate_images(
             drawables
                 .iter()
                 .filter(|d| d.texture.is_some())
@@ -172,10 +169,10 @@ impl <B: hal::Backend> GfxDrawer<B> {
             .update_data(0, &ubos);
     }
 
-    unsafe fn generate_image_states(&mut self, textures: Vec<&Texture>) {
+    unsafe fn generate_images(&mut self, textures: Vec<&Texture>) {
         let new_textures: Vec<&Texture> = textures
             .into_iter()
-            .filter(|t| !self.image_states.contains_key(&RenderKey::from(*t)))
+            .filter(|t| !self.images.contains_key(&RenderKey::from(*t)))
             .unique()
             .collect();
 
@@ -190,7 +187,7 @@ impl <B: hal::Backend> GfxDrawer<B> {
                 &texture.path,
                 &hal::image::SamplerDesc::new(hal::image::Filter::Linear, hal::image::WrapMode::Clamp),
             );
-            self.image_states.insert(RenderKey::from(texture), image_state);
+            self.images.insert(RenderKey::from(texture), image);
         }
 
         self
@@ -247,15 +244,15 @@ impl <B: hal::Backend> GfxDrawer<B> {
 
             // Rendering
             let mut cmd_buffer = command_pool.allocate_one(hal::command::Level::Primary);
-            cmd_buffer.begin_primary(CommandBufferFlags::SIMULTANEOUS_USE);
+            cmd_buffer.begin_primary(hal::command::CommandBufferFlags::SIMULTANEOUS_USE);
 
             cmd_buffer.set_viewports(0, &[self.viewport.clone()]);
             cmd_buffer.set_scissors(0, &[self.viewport.rect]);
 
             cmd_buffer.bind_graphics_pipeline(&self.pipeline.pipeline.as_ref().unwrap());
-            cmd_buffer.bind_vertex_buffers(0, Some((self.vertex_buffer_state.as_ref().unwrap().get_buffer(), 0)));
+            cmd_buffer.bind_vertex_buffers(0, Some((self.vertex_buffer.as_ref().unwrap().get_buffer(), 0)));
             cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView {
-                buffer: self.index_buffer_state.as_ref().unwrap().get_buffer(),
+                buffer: self.index_buffer.as_ref().unwrap().get_buffer(),
                 offset: 0,
                 index_type: hal::IndexType::U32
             });
@@ -268,19 +265,19 @@ impl <B: hal::Backend> GfxDrawer<B> {
                     hal::command::ClearValue { color: hal::command::ClearColor { float32: [0.7, 0.2, 0.0, 1.0] } },
                     hal::command::ClearValue { depth_stencil: hal::command::ClearDepthStencil {depth: 1.0, stencil: 0} }
                 ],
-                SubpassContents::Inline
+                hal::command::SubpassContents::Inline
             );
 
             let mut current_mesh_index = 0;
 
             for (maybe_texture, meshes) in meshes_by_texture.iter() {
                 let texture_key = RenderKey::from(maybe_texture);
-                let texture_image_state = self.image_states.get(&texture_key).unwrap();
+                let texture_image = self.images.get(&texture_key).unwrap();
 
                 cmd_buffer.bind_graphics_descriptor_sets(
                     &self.pipeline.pipeline_layout.as_ref().unwrap(),
                     2,
-                    vec![ &texture_image_state.desc_set.descriptor_set ],
+                    vec![ &texture_image.desc_set.descriptor_set ],
                     &[],
                 );
 
@@ -341,7 +338,7 @@ pub fn fps_view_matrix(eye: Vector3<f32>, pitch_rad: cgmath::Rad<f32>, yaw_rad: 
 }
 
 impl <B: hal::Backend> Drawer<B> for GfxDrawer<B> {
-    unsafe fn draw(&mut self, image_index: usize) {
+    fn draw(&mut self, image_index: usize) {
         let new_ubo = self.update_camera_uniform_buffer_object(dims, camera_transform);
         self.camera_uniform.buffer.as_mut().unwrap().update_data(0, &[new_ubo]);
 
@@ -372,7 +369,7 @@ impl <B: hal::Backend> Drawer<B> for GfxDrawer<B> {
 
         let submission = hal::queue::Submission {
             command_buffers: std::iter::once(&*command_buffer),
-            wait_semaphores: std::iter::once((&*image_acquired_semaphore, PipelineStage::BOTTOM_OF_PIPE)),
+            wait_semaphores: std::iter::once((&*image_acquired_semaphore, hal::pso::PipelineStage::BOTTOM_OF_PIPE)),
             signal_semaphores: std::iter::once(&*image_present_semaphore),
         };
 
@@ -433,7 +430,7 @@ impl<B: hal::Backend> RenderPass<B> {
 
         let dependency = hal::pass::SubpassDependency {
             passes: hal::pass::SubpassRef::External..hal::pass::SubpassRef::Pass(0),
-            stages: PipelineStage::COLOR_ATTACHMENT_OUTPUT..PipelineStage::COLOR_ATTACHMENT_OUTPUT,
+            stages: hal::pso::PipelineStage::COLOR_ATTACHMENT_OUTPUT..hal::pso::PipelineStage::COLOR_ATTACHMENT_OUTPUT,
             accesses: hal::image::Access::empty()..(hal::image::Access::COLOR_ATTACHMENT_READ | hal::image::Access::COLOR_ATTACHMENT_WRITE),
             flags: hal::memory::Dependencies::empty(),
         };
@@ -451,7 +448,7 @@ impl<B: hal::Backend> RenderPass<B> {
 
 impl<B: hal::Backend> Drop for RenderPass<B> {
     fn drop(&mut self) {
-        let device = &self.device.read().unwrap().device;
+        let device = &self.core.read().unwrap().device.device;
         unsafe {
             device.destroy_render_pass(self.render_pass.take().unwrap());
         }
@@ -459,7 +456,7 @@ impl<B: hal::Backend> Drop for RenderPass<B> {
 }
 
 struct Pipeline<B: hal::Backend> {
-    core: Arc<RwLock<RendererCore<B>>>
+    core: Arc<RwLock<RendererCore<B>>>,
     pipeline: Option<B::GraphicsPipeline>,
     pipeline_layout: Option<B::PipelineLayout>,
 }
@@ -538,14 +535,14 @@ impl<B: hal::Backend> Pipeline<B> {
             pipeline_desc.vertex_buffers.push(hal::pso::VertexBufferDesc {
                 binding: 0,
                 stride: std::mem::size_of::<Vertex>() as u32,
-                rate: VertexInputRate::Vertex,
+                rate: hal::pso::VertexInputRate::Vertex,
             });
 
             pipeline_desc.attributes.push(hal::pso::AttributeDesc {
                 location: 0,
                 binding: 0,
                 element: hal::pso::Element {
-                    format: Format::Rgb32Sfloat,
+                    format: hal::format::Format::Rgb32Sfloat,
                     offset: 0,
                 },
             });
@@ -554,7 +551,7 @@ impl<B: hal::Backend> Pipeline<B> {
                 location: 1,
                 binding: 0,
                 element: hal::pso::Element {
-                    format: Format::Rgb32Sfloat,
+                    format: hal::format::Format::Rgb32Sfloat,
                     offset: 12,
                 },
             });
@@ -563,7 +560,7 @@ impl<B: hal::Backend> Pipeline<B> {
                 location: 2,
                 binding: 0,
                 element: hal::pso::Element {
-                    format: Format::Rg32Sfloat,
+                    format: hal::format::Format::Rg32Sfloat,
                     offset: 24,
                 },
             });
@@ -594,7 +591,7 @@ impl<B: hal::Backend> Pipeline<B> {
 
 impl<B: hal::Backend> Drop for Pipeline<B> {
     fn drop(&mut self) {
-        let device = &self.device.read().unwrap().device;
+        let device = &self.core.read().unwrap().device.device;
         unsafe {
             device.destroy_graphics_pipeline(self.pipeline.take().unwrap());
             device.destroy_pipeline_layout(self.pipeline_layout.take().unwrap());
@@ -603,7 +600,7 @@ impl<B: hal::Backend> Drop for Pipeline<B> {
 }
 
 struct Framebuffers<B: hal::Backend> {
-    core Arc<RwLock<RendererCore<B>>>,
+    core: Arc<RwLock<RendererCore<B>>>,
     framebuffers: Option<Vec<B::Framebuffer>>,
     framebuffer_fences: Option<Vec<B::Fence>>,
     command_pools: Option<Vec<B::CommandPool>>,
@@ -641,7 +638,7 @@ impl<B: hal::Backend> Framebuffers<B> {
                             &image,
                             hal::image::ViewKind::D2,
                             image_format,
-                            Swizzle::NO,
+                            hal::format::Swizzle::NO,
                             COLOR_RANGE.clone(),
                         )
                         .unwrap();
@@ -684,13 +681,13 @@ impl<B: hal::Backend> Framebuffers<B> {
         for _ in 0..iter_count {
             fences.push(core.read().unwrap().device.device.create_fence(true).unwrap());
             command_pools.push(
-                core.
+                core
                     .read()
                     .unwrap()
                     .device
                     .device
                     .create_command_pool(
-                        core.
+                        core
                             .read()
                             .unwrap()
                             .device
@@ -763,7 +760,7 @@ impl<B: hal::Backend> Framebuffers<B> {
 
 impl<B: hal::Backend> Drop for Framebuffers<B> {
     fn drop(&mut self) {
-        let device = &self.device.read().unwrap().device;
+        let device = &self.core.read().unwrap().device.device;
 
         unsafe {
             for fence in self.framebuffer_fences.take().unwrap() {

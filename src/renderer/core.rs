@@ -12,7 +12,7 @@ impl<B: hal::Backend> RendererCore<B> {
         let window_builder = winit::window::WindowBuilder::new()
             .with_title("sxe")
             .with_inner_size(size);
-        let (backend: GfxBackend<B>, _instance: Instance<B>) = create_backend(window_builder, event_loop);
+        let (backend, _instance): (GfxBackend<B>, B::Instance) = create_backend(window_builder, event_loop);
         let device: GfxDevice<B> = GfxDevice::new(
             backend.adapter.adapter.take().unwrap(),
             &backend.surface

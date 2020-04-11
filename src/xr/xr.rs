@@ -1,6 +1,6 @@
 use std::path::Path;
 use ash::vk;
-use openxr::{ApplicationInfo, Entry, FormFactor, FrameWaiter, FrameStream, Instance, SystemId, Session, Vulkan, Result as OpenXrResult, vulkan::SessionCreateInfo, Swapchain, SwapchainCreateInfo, SwapchainCreateFlags, ViewConfigurationType};
+use openxr::{ApplicationInfo, Entry, FormFactor, FrameWaiter, FrameStream, Instance, SystemId, Session, Vulkan, Result as OpenXrResult, vulkan::SessionCreateInfo, Swapchain, SwapchainCreateInfo, SwapchainCreateFlags, ViewConfigurationType, Space, Posef, Quaternionf, Vector3f, ReferenceSpaceType, Extent2Di};
 use std::ffi::c_void;
 
 const VK_FORMAT_R8G8B8A8_SRGB: u32 = 43;
@@ -38,7 +38,7 @@ impl Xr {
         }
     }
 
-    pub unsafe fn create_vulkan_session(&self, session_create_info: VulkanXrSessionCreateInfo) -> OpenXrResult<VulkanXrSession> {
+    pub unsafe fn create_vulkan_session(self, session_create_info: VulkanXrSessionCreateInfo) -> OpenXrResult<VulkanXrSession> {
         use ash::vk::Handle;
 
         let create_info = SessionCreateInfo {
@@ -49,9 +49,18 @@ impl Xr {
             queue_index: session_create_info.queue_index,
         };
 
-        self.instance
-            .create_session(self.system_id, &create_info)
-            .map( VulkanXrSession::from)
+        let (session, frame_waiter, frame_stream) = self.instance.create_session(self.system_id, &create_info)?;
+
+        Ok(VulkanXrSession {
+            xr: self,
+            session,
+            frame_waiter,
+            frame_stream,
+            swapchain: None,
+            swapchain_images: None,
+            resolution: None,
+            world_space: None,
+        })
     }
 }
 
@@ -64,34 +73,37 @@ pub struct VulkanXrSessionCreateInfo {
 }
 
 pub struct VulkanXrSession {
+    xr: Xr,
     session: Session<Vulkan>,
     frame_waiter: FrameWaiter,
     frame_stream: FrameStream<Vulkan>,
     swapchain: Option<Swapchain<Vulkan>>,
     swapchain_images: Option<Vec<gfx_backend_vulkan::native::Image>>,
+    resolution: Option<Extent2Di>,
+    world_space: Option<Space>,
 }
 
 impl VulkanXrSession {
     fn create_swapchain(&mut self) {
-        let view_configuration_views = instance
-            .enumerate_view_configuration_views(system, ViewConfigurationType::PRIMARY_STEREO)
+        let view_configuration_views = self.xr.instance
+            .enumerate_view_configuration_views(self.xr.system_id, ViewConfigurationType::PRIMARY_STEREO)
             .unwrap();
 
-        let resolution = (
-            view_configuration_views[0].recommended_image_rect_width,
-            view_configuration_views[0].recommended_image_rect_height,
-        );
+        let resolution = Extent2Di {
+            width: view_configuration_views[0].recommended_image_rect_width as i32,
+            height: view_configuration_views[0].recommended_image_rect_height as i32,
+        };
 
         let sample_count = view_configuration_views[0].recommended_swapchain_sample_count;
 
         let swapchain_create_info = SwapchainCreateInfo {
             create_flags: SwapchainCreateFlags::STATIC_IMAGE,
-            usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT
-                | xr::SwapchainUsageFlags::SAMPLED,
+            usage_flags: openxr::SwapchainUsageFlags::COLOR_ATTACHMENT
+                | openxr::SwapchainUsageFlags::SAMPLED,
             format: VK_FORMAT_R8G8B8A8_SRGB,
             sample_count,
-            width: resolution.0,
-            height: resolution.1,
+            width: resolution.width as u32,
+            height: resolution.height as u32,
             face_count: 1,
             array_size: 2,
             mip_count: 1,
@@ -110,15 +122,35 @@ impl VulkanXrSession {
                     ty: vk::ImageType::from_raw(VK_FORMAT_R8G8B8A8_SRGB as i32),
                     flags: vk::ImageCreateFlags::empty(),
                     extent: vk::Extent3D {
-                        width: resolution.0,
-                        height: resolution.1,
+                        width: resolution.width as u32,
+                        height: resolution.height as u32,
                         depth: 1,
                     },
                 }
             })
             .collect();
+
+        let pose = Posef {
+            orientation: Quaternionf {
+                x: 0.,
+                y: 0.,
+                z: 0.,
+                w: 1.,
+            },
+            position: Vector3f {
+                x: 0.,
+                y: 0.,
+                z: 0.,
+            },
+        };
+        let world_space = self.session
+            .create_reference_space(ReferenceSpaceType::LOCAL, pose)
+            .unwrap();
+
         self.swapchain_images = Some(swapchain_images);
         self.swapchain = Some(swapchain);
+        self.resolution = Some(resolution);
+        self.world_space = Some(world_space);
     }
 
     fn draw(&mut self) {
@@ -137,7 +169,7 @@ impl VulkanXrSession {
             .locate_views(
                 openxr::ViewConfigurationType::PRIMARY_STEREO,
                 state.predicted_display_time,
-                world_space,
+                self.world_space.as_ref().unwrap(),
             )
             .unwrap();
 
@@ -147,7 +179,7 @@ impl VulkanXrSession {
                 state.predicted_display_time,
                 openxr::EnvironmentBlendMode::OPAQUE,
                 &[&openxr::CompositionLayerProjection::new()
-                    .space(world_space)
+                    .space(self.world_space.as_ref().unwrap())
                     .views(&[
                         openxr::CompositionLayerProjectionView::new()
                             .pose(views[0].pose)
@@ -158,7 +190,7 @@ impl VulkanXrSession {
                                     .image_array_index(0)
                                     .image_rect(openxr::Rect2Di {
                                         offset: openxr::Offset2Di { x: 0, y: 0 },
-                                        extent: view_resolution[0],
+                                        extent: self.resolution.unwrap(),
                                     }),
                             ),
                         openxr::CompositionLayerProjectionView::new()
@@ -170,23 +202,11 @@ impl VulkanXrSession {
                                     .image_array_index(1)
                                     .image_rect(openxr::Rect2Di {
                                         offset: openxr::Offset2Di { x: 0, y: 0 },
-                                        extent: view_resolution[1],
+                                        extent: self.resolution.unwrap(),
                                     }),
                             )
                     ])]
             )
             .unwrap();
-    }
-}
-
-impl From<(Session<Vulkan>, FrameWaiter, FrameStream<Vulkan>)> for VulkanXrSession {
-    fn from(i: (Session<Vulkan>, FrameWaiter, FrameStream<Vulkan>)) -> Self {
-        Self {
-            session: i.0,
-            frame_waiter: i.1,
-            frame_stream: i.2,
-            swapchain: None,
-            swapchain_images: None,
-        }
     }
 }
