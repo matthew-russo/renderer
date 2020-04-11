@@ -1,11 +1,13 @@
-
 use crate::utils::{any_as_u8_slice, data_path};
 use crate::renderer::core::RendererCore;
+use crate::renderer::types::{Buffer, Uniform, Image, DescSetLayout, DescSet};
 use std::sync::{Arc, RwLock};
 use std::fs::File;
 use std::io::BufReader;
 use hal::device::Device;
 use hal::adapter::MemoryType;
+use hal::queue::CommandQueue;
+use hal::pso::DescriptorPool;
 
 pub const COLOR_RANGE: hal::image::SubresourceRange = hal::image::SubresourceRange {
     aspects: hal::format::Aspects::COLOR,
@@ -13,12 +15,12 @@ pub const COLOR_RANGE: hal::image::SubresourceRange = hal::image::SubresourceRan
     layers: 0..1,
 };
 
-trait Allocator<B: hal::Backend> {
-    fn alloc_buffer() -> Buffer<B>;
-    fn alloc_uniform() -> Uniform<B>;
-    fn alloc_image() -> Image<B>;
-    fn alloc_desc_set_layout() -> DescSetLayout<B>;
-    fn alloc_desc_set() -> DescSet<B>;
+pub(crate) trait Allocator<B: hal::Backend> {
+    fn alloc_buffer(&mut self) -> Buffer<B>;
+    fn alloc_uniform(&mut self) -> Uniform<B>;
+    fn alloc_image(&mut self) -> Image<B>;
+    fn alloc_desc_set_layout(&mut self) -> DescSetLayout<B>;
+    fn alloc_desc_set(&mut self) -> DescSet<B>;
 }
 
 pub(crate) struct GfxAllocator<B: hal::Backend> {
@@ -30,7 +32,7 @@ pub(crate) struct GfxAllocator<B: hal::Backend> {
 }
 
 impl <B: hal::Backend> GfxAllocator<B> {
-    unsafe fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
+    pub fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
         let image_desc_pool = core
             .read()
             .unwrap()
@@ -109,69 +111,22 @@ impl <B: hal::Backend> GfxAllocator<B> {
         }
     }
 
-    // fn create_set(desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>, descriptor_pool: &mut B::DescriptorPool) -> DescSet<B> {
-    //     let descriptor_set = unsafe {
-    //         descriptor_pool.allocate_set(desc_set_layout.read().unwrap().layout.as_ref().unwrap())
-    //     }.unwrap();
+    fn create_set(desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>, descriptor_pool: &mut B::DescriptorPool) -> DescSet<B> {
+        let descriptor_set = unsafe {
+            descriptor_pool.allocate_set(desc_set_layout.read().unwrap().layout.as_ref().unwrap())
+        }.unwrap();
 
-    //     DescSet {
-    //         core: Arc::clone(desc_set_layout),
-    //         descriptor_set,
-    //         desc_set_layout: desc_set_layout.clone()
-    //     }
-    // }
+        DescSet {
+            descriptor_set,
+            desc_set_layout: desc_set_layout.clone()
+        }
+    }
 }
 
 impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
-    fn alloc_buffer() -> Buffer<B> {
-        unimplemented!()
-    }
-
-    fn alloc_uniform() -> Uniform<B> {
-        unimplemented!()
-    }
-
-    fn alloc_image() -> Image<B> {
-        unimplemented!()
-    }
-
-    fn alloc_desc_set() -> DescSet<B> {
-        unimplemented!()
-    }
-
-    fn alloc_desc_set_layout() -> DescSetLayout<B> {
-        unimplemented!()
-    }
-}
-
-pub(crate) struct Buffer<B: hal::Backend> {
-    core: Arc<RwLock<RendererCore<B>>>,
-    buffer: Option<B::Buffer>,
-    buffer_memory: Option<B::Memory>,
-    memory_is_mapped: bool,
-    size: u64,
-    padded_stride: u64,
-}
-
-impl<B: hal::Backend> Buffer<B> {
-    pub fn get_buffer(&self) -> &B::Buffer {
-        self.buffer.as_ref().unwrap()
-    }
-
-    pub unsafe fn new<T: Sized>(
-        core: &Arc<RwLock<RendererCore<B>>>,
-        data_source: &[T],
-        alignment: u64,
-        min_size: u64,
-        usage: hal::buffer::Usage,
-        memory_types: &[MemoryType]
-    ) -> Self
-        where T: Copy,
-              T: std::fmt::Debug
-    {
+    fn alloc_buffer(&mut self) -> Buffer<B> {
         let memory: B::Memory;
         let mut buffer: B::Buffer;
-        let size: u64;
 
         let data_stride = std::mem::size_of::<T>() as u64;
         let padded_stride = if data_stride < alignment {
@@ -188,114 +143,47 @@ impl<B: hal::Backend> Buffer<B> {
             upload_size = min_size;
         }
 
-        {
             let device = &core.read().unwrap().device.device;
 
-            buffer = device.create_buffer(upload_size, usage).unwrap();
-            let mem_req = device.get_buffer_requirements(&buffer);
+        buffer = device.create_buffer(upload_size, usage).unwrap();
+        let mem_req = device.get_buffer_requirements(&buffer);
 
-            // A note about performance: Using CPU_VISIBLE memory is convenient because it can be
-            // directly memory mapped and easily updated by the CPU, but it is very slow and so should
-            // only be used for small pieces of data that need to be updated very frequently. For something like
-            // a vertex buffer that may be much larger and should not change frequently, you should instead
-            // use a DEVICE_LOCAL buffer that gets filled by copying data from a CPU_VISIBLE staging buffer.
-            let upload_type = memory_types
-                .iter()
-                .enumerate()
-                .position(|(id, mem_type)| {
-                    mem_req.type_mask & (1 << id) != 0
-                        && mem_type.properties.contains(hal::memory::Properties::CPU_VISIBLE)
-                })
-                .unwrap()
-                .into();
+        // A note about performance: Using CPU_VISIBLE memory is convenient because it can be
+        // directly memory mapped and easily updated by the CPU, but it is very slow and so should
+        // only be used for small pieces of data that need to be updated very frequently. For something like
+        // a vertex buffer that may be much larger and should not change frequently, you should instead
+        // use a DEVICE_LOCAL buffer that gets filled by copying data from a CPU_VISIBLE staging buffer.
+        let upload_type = memory_types
+            .iter()
+            .enumerate()
+            .position(|(id, mem_type)| {
+                mem_req.type_mask & (1 << id) != 0
+                    && mem_type.properties.contains(hal::memory::Properties::CPU_VISIBLE)
+            })
+            .unwrap()
+            .into();
 
-            memory = device.allocate_memory(upload_type, mem_req.size).unwrap();
-            device.bind_buffer_memory(&memory, 0, &mut buffer).unwrap();
-            size = mem_req.size;
+        memory = device.allocate_memory(upload_type, mem_req.size).unwrap();
+        device.bind_buffer_memory(&memory, 0, &mut buffer).unwrap();
 
-            // TODO: check transitions: read/write mapping and vertex buffer read
-            {
-                let mapping = device.map_memory(&memory, 0..size).unwrap();
-
-                let data_as_bytes = data_source
-                    .iter()
-                    .flat_map(|ubo| { any_as_u8_slice(ubo, padded_stride as usize) })
-                    .collect::<Vec<u8>>();
-                std::ptr::copy_nonoverlapping(
-                    data_as_bytes.as_ptr(),
-                    mapping.offset(0),
-                    size as usize
-                );
-
-                device.unmap_memory(&memory);
-            }
-        }
-
-        Self {
-            core: Arc::clone(core),
-            buffer_memory: Some(memory),
-            buffer: Some(buffer),
-            memory_is_mapped: false,
-            size,
+        Buffer::new(
+            Some(memory),
+            Some(buffer),
+            false,
+            mem_req.size,
             padded_stride,
-        }
+        )
     }
 
-    fn update_data<T>(&mut self, offset: u64, data_source: &[T])
+    fn alloc_uniform(&mut self,
+                     data: &[T],
+                     desc: DescSet<B>,
+                     binding: u32) -> Uniform<B>
         where T: Copy,
               T: std::fmt::Debug
     {
-        let device = &self.core.read().unwrap().device.device;
-        let upload_size = data_source.len() as u64 * self.padded_stride;
-
-        assert!(offset + upload_size <= self.size);
-
-        unsafe {
-            let mapping = device.map_memory(self.buffer_memory.as_ref().unwrap(), offset..upload_size).unwrap();
-
-            let data_as_bytes = data_source
-                .iter()
-                .flat_map(|ubo| any_as_u8_slice(ubo, self.padded_stride as usize))
-                .collect::<Vec<u8>>();
-            std::ptr::copy_nonoverlapping(
-                data_as_bytes.as_ptr(),
-                mapping.offset(0),
-                upload_size as usize
-            );
-
-            device.unmap_memory(self.buffer_memory.as_ref().unwrap());
-        }
-    }
-}
-
-impl<B: hal::Backend> Drop for Buffer<B> {
-    fn drop(&mut self) {
-        let device = &self.core.read().unwrap().device.device;
-        unsafe {
-            device.destroy_buffer(self.buffer.take().unwrap());
-            device.free_memory(self.buffer_memory.take().unwrap());
-        }
-    }
-}
-
-pub(crate) struct Uniform<B: hal::Backend> {
-    pub core: Arc<RwLock<RendererCore<B>>>,
-    pub buffer: Option<Buffer<B>>,
-    pub desc: Option<DescSet<B>>,
-}
-
-impl<B: hal::Backend> Uniform<B> {
-    unsafe fn new<T>(
-        core: &Arc<RwLock<RendererCore<B>>>,
-        data: &[T],
-        desc: DescSet<B>,
-        binding: u32
-    ) -> Self
-        where T: Copy,
-              T: std::fmt::Debug
-    {
-        let buffer = Some(Buffer::new(
-            &core.read().unwrap().device,
+        let buffer = Some(self.alloc_buffer(
+            &core,
             &data,
             core.read().unwrap().backend.adapter.limits.min_uniform_buffer_offset_alignment,
             65536,
@@ -315,36 +203,20 @@ impl<B: hal::Backend> Uniform<B> {
             }]
         );
 
-        Self {
-            core: Arc::clone(core),
+        Uniform::new(
             buffer,
-            desc: Some(desc)
-        }
+            Some(desc)
+        )
     }
-}
 
-pub(crate) struct Image<B: hal::Backend> {
-    pub core: Arc<RwLock<RendererCore<B>>>,
-    pub desc_set: DescSet<B>,
-    pub sampler: Option<B::Sampler>,
-    pub image: Option<B::Image>,
-    pub image_view: Option<B::ImageView>,
-    pub image_memory: Option<B::Memory>,
-    pub transferred_image_fence: Option<B::Fence>,
-}
-
-// TODO -> refactor this --
-//      - pass image data in,
-//      - take create_image function into account
-//
-impl<B: hal::Backend> Image<B> {
-    pub unsafe fn new(
-        core: &Arc<RwLock<RendererCore<B>>>,
-        _usage: hal::buffer::Usage,
-        img_path: &String,
-        sampler_desc: &hal::image::SamplerDesc,
-    ) -> Self {
+    fn alloc_image(&mut self,
+                   _usage: hal::buffer::Usage,
+                   img_path: &String,
+                   sampler_desc: &hal::image::SamplerDesc,) -> Image<B> {
         let mut staging_pool = core
+            .read()
+            .unwrap()
+            .device
             .device
             .create_command_pool(
                 core
@@ -387,9 +259,9 @@ impl<B: hal::Backend> Image<B> {
             .into();
 
         let image_upload_memory = {
-            let memory = core.device.device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
+            let memory = core.read().unwrap().device.device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
             core.read().unwrap().device.device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
-            let mapping = core.device.device.map_memory(&memory, 0..upload_size).unwrap();
+            let mapping = core.read().unwrap().device.device.map_memory(&memory, 0..upload_size).unwrap();
 
             // TODO -> duplicated in load_image_data
             for y in 0..image_data.height as usize {
@@ -545,25 +417,34 @@ impl<B: hal::Backend> Image<B> {
             ]
         );
 
+        Image::new(
+            desc_set,
+            Some(sampler),
+            Some(image),
+            Some(image_view),
+            Some(image_memory),
+            Some(transferred_image_fence),
+        )
+    }
+
+    fn alloc_desc_set_layout(&mut self) -> DescSetLayout<B> {
+        let layout = unsafe {
+            core
+                .read()
+                .unwrap()
+                .device
+                .device
+                .create_descriptor_set_layout(bindings, &[])
+        }.expect("Can't create descriptor set layout");
+
         Self {
             core: Arc::clone(core),
-            desc_set,
-            sampler: Some(sampler),
-            image: Some(image),
-            image_view: Some(image_view),
-            image_memory: Some(image_memory),
-            transferred_image_fence: Some(transferred_image_fence),
+            layout: Some(layout),
         }
     }
 
-    pub fn wait_for_transfer_completion(&self) {
-        let readable_desc_set = self.desc_set.desc_set_layout.read().unwrap();
-        let device = &readable_desc_set.core.read().unwrap().device.device;
-        unsafe {
-            device
-                .wait_for_fence(&self.transferred_image_fence.as_ref().unwrap(), !0)
-                .unwrap();
-        }
+    fn alloc_desc_set() -> DescSet<B> {
+        unimplemented!()
     }
 }
 
@@ -602,107 +483,9 @@ fn load_image_data(img_path: &str, row_alignment_mask: u32) -> ImageData {
         width,
         height,
         data,
-        format: hal::format::Rgba8Srgb::SELF,
+        format: hal::format::Format::Rgba8Srgb,
     };
 
     return image_data;
 }
-
-impl<B: hal::Backend> Drop for Image<B> {
-    fn drop(&mut self) {
-        unsafe {
-            let readable_desc_set_layout = self.desc_set.desc_set_layout.read().unwrap();
-            let device = &readable_desc_set_layout.core.read().unwrap().device.device;
-
-            let fence = self.transferred_image_fence.take().unwrap();
-            device.wait_for_fence(&fence, !0).unwrap();
-            device.destroy_fence(fence);
-
-            device.destroy_sampler(self.sampler.take().unwrap());
-            device.destroy_image_view(self.image_view.take().unwrap());
-            device.destroy_image(self.image.take().unwrap());
-            device.free_memory(self.image_memory.take().unwrap());
-        }
-    }
-}
-
-struct DescSet<B: hal::Backend> {
-    pub core: Arc<RwLock<RendererCore<B>>>,
-    pub descriptor_set: B::DescriptorSet,
-    pub desc_set_layout: Arc<RwLock<DescSetLayout<B>>>,
-}
-// vec![
-//     hal::pso::DescriptorSetWrite {
-//         set: &descriptor_set,
-//         binding: 0,
-//         array_offset: 0,
-//         descriptors: Some(hal::pso::Descriptor::Image(&image_view, hal::image::Layout::Undefined))
-//     },
-//     hal::pso::DescriptorSetWrite {
-//         set: &descriptor_set,
-//         binding: 1,
-//         array_offset: 0,
-//         descriptors: Some(hal::pso::Descriptor::Sampler(&sampler))
-//     },
-// ]
-
-impl<B: hal::Backend> DescSet<B> {
-    fn write<'a, 'b: 'a, WI>(&'b self, device: &mut B::Device, writes: Vec<DescSetWrite<WI>>)
-        where
-            WI: std::borrow::Borrow<hal::pso::Descriptor<'a, B>>
-    {
-        let descriptor_set_writes = writes
-            .into_iter()
-            .map(|dsw| hal::pso::DescriptorSetWrite {
-                set: &self.descriptor_set,
-                binding: dsw.binding,
-                array_offset: dsw.array_offset,
-                descriptors: Some(dsw.descriptors)
-            });
-
-        unsafe {
-            device.write_descriptor_sets(descriptor_set_writes);
-        }
-    }
-}
-
-struct DescSetWrite<WI> {
-    binding: hal::pso::DescriptorBinding,
-    array_offset: hal::pso::DescriptorArrayIndex,
-    descriptors: WI
-}
-
-struct DescSetLayout<B: hal::Backend> {
-    core: Arc<RwLock<RendererCore<B>>>,
-    layout: Option<B::DescriptorSetLayout>,
-}
-
-impl<B: hal::Backend> DescSetLayout<B> {
-    fn new(core: &Arc<RwLock<RendererCore<B>>>, bindings: Vec<hal::pso::DescriptorSetLayoutBinding>) -> Self {
-        let layout = unsafe {
-            core
-                .read()
-                .unwrap()
-                .device
-                .device
-                .create_descriptor_set_layout(bindings, &[])
-        }.expect("Can't create descriptor set layout");
-
-        Self {
-            core: Arc::clone(core),
-            layout: Some(layout),
-        }
-    }
-}
-
-impl<B: hal::Backend> Drop for DescSetLayout<B> {
-    fn drop(&mut self) {
-        let device = &self.core.read().unwrap().device.device;
-        unsafe {
-            device.destroy_descriptor_set_layout(self.layout.take().unwrap());
-        }
-    }
-}
-
-
 

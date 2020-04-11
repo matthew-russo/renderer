@@ -87,24 +87,30 @@ use legion::Universe;
 use legion::query::{Read, Write, IntoQuery, Query};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::ControlFlow;
-use crate::renderer::presenter::{MonitorPresenter, XrPresenter};
-use crate::renderer::allocator::GfxAllocator;
 use crate::renderer::core::RendererCore;
-use crate::renderer::drawer::GfxDrawer;
+use crate::renderer::allocator::{Allocator, GfxAllocator};
+use crate::renderer::drawer::{Drawer, GfxDrawer};
+use crate::renderer::presenter::{Presenter, MonitorPresenter, XrPresenter};
 
 fn main() {
     env_logger::init();
 
+    let default_logical_size = winit::dpi::LogicalSize {
+        width: 800.0 as f64,
+        height: 600.0 as f64,
+    };
+
     let event_loop = winit::event_loop::EventLoop::new();
-    let renderer_core = Arc::new(RwLock::new(RendererCore::new(event_loop)));
-    let renderer_allocator = GfxAllocator::new(&renderer_core);
-    let renderer_drawer = GfxDrawer::new();
+    let renderer_core = Arc::new(RwLock::new(RendererCore::new(default_logical_size, &event_loop)));
 
     #[cfg(feature = "xr")]
-    let renderer_presenter = XrPresenter::new();
+    let presenter = XrPresenter::new();
 
     #[cfg(not(feature = "xr"))]
-    let renderer_presenter = MonitorPresenter::new();
+    let presenter = MonitorPresenter::new(&renderer_core);
+
+    let allocator = GfxAllocator::new(&renderer_core);
+    let drawer = GfxDrawer::new(&renderer_core, presenter.viewport());
 
     let event_handler = Arc::new(RwLock::new(EventHandler::new()));
 
@@ -113,7 +119,7 @@ fn main() {
     //     xr.create_vulkan_session(renderer.vulkan_session_create_info())
     // }.unwrap();
 
-    start_engine(renderer, &event_handler);
+    start_engine(drawer, presenter, &event_handler);
 
     event_loop.run(move |event, _, control_flow| {
         match event {
@@ -131,7 +137,7 @@ fn main() {
     });
 }
 
-fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared: &Arc<RwLock<EventHandler>>) {
+fn start_engine<B: hal::Backend, D: Drawer<B>, P: Presenter<B>>(mut drawer: D, mut presenter: P, event_handler_shared: &Arc<RwLock<EventHandler>>) {
     let event_handler = event_handler_shared.clone();
 
     std::thread::spawn(move || {
@@ -200,7 +206,7 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                 .collect();
 
             unsafe {
-                renderer.update_drawables(drawables);
+                drawer.update_drawables(drawables);
             }
         }
 
@@ -246,7 +252,7 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                     })
                     .collect();
 
-                unsafe { renderer.update_drawables(drawables) };
+                unsafe { drawer.update_drawables(drawables) };
                 need_to_update_config = true;
             }
 
@@ -259,8 +265,13 @@ fn start_engine(mut renderer: Renderer<impl hal::Backend>, event_handler_shared:
                 config.should_record_commands = false;
             }
 
-            unsafe { renderer.map_uniform_data(uniform_data) };
-            unsafe { renderer.draw_frame(&camera_transform) };
+            unsafe {
+                drawer.map_uniform_data(uniform_data);
+
+                let image_index = presenter.acquire_image().unwrap();
+                drawer.draw(image_index as usize);
+                presenter.present();
+            }
         }
     });
 }

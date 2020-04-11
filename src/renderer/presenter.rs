@@ -9,9 +9,10 @@ const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 
 type ImageIndex = u32;
 
-trait Presenter<B: hal::Backend> {
+pub(crate) trait Presenter<B: hal::Backend> {
     fn acquire_image(&mut self, acquire_semaphore: B::Semaphore) -> Result<ImageIndex, String>;
     fn present(&mut self) -> Result<(), String>;
+    fn viewport(&self) -> Viewport;
 }
 
 pub(crate) struct XrPresenter {
@@ -26,7 +27,7 @@ pub(crate) struct MonitorPresenter<B: hal::Backend> {
 }
 
 impl <B: hal::Backend> MonitorPresenter<B> {
-    fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
+    pub fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
         let swapchain = Swapchain::new(core);
         let framebuffer = Framebuffers::new(
             &core.read().unwrap().device,
@@ -76,36 +77,44 @@ impl <B: hal::Backend> Presenter<B> for MonitorPresenter<B> {
     }
 
     fn present(&mut self) -> Result<(), String> {
-        let image_index = self
-            .acquired_image
-            .take()
-            .ok_or(String::from("no image acquired to present to"))?;
+        unsafe {
+            let image_index = self
+                .acquired_image
+                .take()
+                .ok_or(String::from("no image acquired to present to"))?;
 
-        let queue = self
-            .core
-            .read()
-            .unwrap()
-            .device
-            .queue_group
-            .queues[0];
+            let queue = self
+                .core
+                .read()
+                .unwrap()
+                .device
+                .queue_group
+                .queues[0];
 
-        self.swapchain
-            .swapchain
-            .unwrap()
-            .present(
-                queue,
-                image_index,
-                Some(&*image_present_semaphore)
-            )
+            self.swapchain
+                .swapchain
+                .unwrap()
+                .present(
+                    queue,
+                    image_index,
+                    Some(&*image_present_semaphore)
+                )
+                .map(|v| ())
+                .map_err(|e| e.to_string())
+        }
+    }
+
+    fn viewport(&self) -> Viewport {
+        self.viewport.clone()
     }
 }
 
-struct Swapchain<B: hal::Backend> {
-    core: Arc<RwLock<RendererCore<B>>>,
-    swapchain: Option<B::Swapchain>,
-    backbuffer: Option<Vec<B::Image>>,
-    format: hal::format::Format,
-    extent: hal::image::Extent,
+pub(crate) struct Swapchain<B: hal::Backend> {
+    pub core: Arc<RwLock<RendererCore<B>>>,
+    pub swapchain: Option<B::Swapchain>,
+    pub backbuffer: Option<Vec<B::Image>>,
+    pub format: hal::format::Format,
+    pub extent: hal::image::Extent,
 }
 
 impl<B: hal::Backend> Swapchain<B> {

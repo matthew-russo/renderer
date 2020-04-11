@@ -7,7 +7,7 @@ use crate::renderer::allocator::COLOR_RANGE;
 use crate::components::{mesh::Mesh, texture::Texture, transform::Transform};
 use crate::primitives::{drawable::Drawable, vertex::Vertex};
 use crate::primitives::uniform_buffer_object::{CameraUniformBufferObject, ObjectUniformBufferObject};
-use crate::renderer::allocator::{Image, Uniform, Buffer, DescSet, DescSetLayout};
+use crate::renderer::types::{Image, Uniform, Buffer, DescSet, DescSetLayout};
 use crate::renderer::render_key::RenderKey;
 use crate::renderer::core::RendererCore;
 use crate::utils::data_path;
@@ -21,7 +21,7 @@ use hal::device::Device;
 use hal::queue::CommandQueue;
 
 
-trait Drawer<B: hal::Backend> {
+pub(crate) trait Drawer<B: hal::Backend> {
     fn draw(&mut self, image_index: usize);
 }
 
@@ -46,7 +46,7 @@ pub(crate) struct GfxDrawer<B: hal::Backend> {
 }
 
 impl <B: hal::Backend> GfxDrawer<B> {
-    pub unsafe fn new(core: &Arc<RwLock<RendererCore<B>>>, viewport: Viewport) -> Self {
+    pub fn new(core: &Arc<RwLock<RendererCore<B>>>, viewport: Viewport) -> Self {
         let render_pass = RenderPass::new(
             core,
             &swapchain,
@@ -104,7 +104,7 @@ impl <B: hal::Backend> GfxDrawer<B> {
 
         let vertex_alignment = self.core.read().unwrap().backend.adapter.limits.min_vertex_input_binding_stride_alignment;
         let vertex_buffer = Buffer::new(
-            &self.core.read().unwrap().device,
+            &self.core,
             &vertices,
             vertex_alignment,
             65536,
@@ -113,7 +113,7 @@ impl <B: hal::Backend> GfxDrawer<B> {
         );
 
         let index_buffer = Buffer::new(
-            &self.core.read().unwrap().device,
+            &self.core,
             &indices,
             1,
             65536,
@@ -390,7 +390,7 @@ struct RenderPass<B: hal::Backend> {
 }
 
 impl<B: hal::Backend> RenderPass<B> {
-    fn new(core: &Arc<RwLock<RendererCore<B>>>, swapchain: &Swapchain<B>) -> Self {
+    fn new(core: &Arc<RwLock<RendererCore<B>>>, swapchain: &crate::renderer::presenter::Swapchain<B>) -> Self {
         let device = &core
             .read()
             .unwrap()
