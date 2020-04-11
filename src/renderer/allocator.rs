@@ -1,6 +1,6 @@
 use crate::utils::{any_as_u8_slice, data_path};
 use crate::renderer::core::RendererCore;
-use crate::renderer::types::{Buffer, Uniform, Image, DescSetLayout, DescSet};
+use crate::renderer::types::{Buffer, Uniform, Image, DescSetLayout, DescSet, DescSetWrite};
 use std::sync::{Arc, RwLock};
 use std::fs::File;
 use std::io::BufReader;
@@ -429,7 +429,8 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
 
     fn alloc_desc_set_layout(&mut self) -> DescSetLayout<B> {
         let layout = unsafe {
-            core
+            self
+                .core
                 .read()
                 .unwrap()
                 .device
@@ -437,8 +438,7 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
                 .create_descriptor_set_layout(bindings, &[])
         }.expect("Can't create descriptor set layout");
 
-        Self {
-            core: Arc::clone(core),
+        DescSetLayout {
             layout: Some(layout),
         }
     }

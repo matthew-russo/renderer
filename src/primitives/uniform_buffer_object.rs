@@ -15,6 +15,28 @@ impl CameraUniformBufferObject {
     }
 }
 
+impl std::default::Default for CameraUniformBufferObject {
+    fn default() -> Self {
+        let view = Matrix4::look_at(
+            cgmath::Point3::new(5.0, 5.0, 5.0),
+            cgmath::Point3::new(0.0, 0.0, 0.0),
+            cgmath::Vector3::new(0.0, 1.0, 0.0)
+        );
+        let mut proj = cgmath::perspective(
+            cgmath::Deg(45.0),
+            DIMS.width as f32 / DIMS.height as f32,
+            0.1,
+            1000.0
+        );
+        my_temp_proj.y.y *= -1.0;
+
+        CameraUniformBufferObject::new(
+            my_temp_view,
+            my_temp_proj
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ObjectUniformBufferObject {
     pub model: Matrix4<f32>,
@@ -25,5 +47,13 @@ impl ObjectUniformBufferObject {
         Self {
             model,
         }
+    }
+}
+
+impl std::default::Default for ObjectUniformBufferObject {
+    fn default() -> Self {
+        ObjectUniformBufferObject::new(
+            Matrix4::identity(),
+        )
     }
 }

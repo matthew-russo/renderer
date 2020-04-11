@@ -29,15 +29,7 @@ pub(crate) struct MonitorPresenter<B: hal::Backend> {
 impl <B: hal::Backend> MonitorPresenter<B> {
     pub fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
         let swapchain = Swapchain::new(core);
-        let framebuffer = Framebuffers::new(
-            &core.read().unwrap().device,
-            &mut swapchain,
-            &render_pass,
-            depth_image_stuff
-        );
-
         let viewport = Self::create_viewport(&swapchain);
-
         Self {
             core: Arc::clone(core),
             swapchain,
@@ -76,7 +68,7 @@ impl <B: hal::Backend> Presenter<B> for MonitorPresenter<B> {
         Ok(image_index)
     }
 
-    fn present(&mut self) -> Result<(), String> {
+    fn present(&mut self, image_present_semaphore: &B::Semaphore) -> Result<(), String> {
         unsafe {
             let image_index = self
                 .acquired_image

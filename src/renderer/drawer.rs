@@ -52,17 +52,34 @@ impl <B: hal::Backend> GfxDrawer<B> {
             &swapchain,
         );
 
-        let pipeline = Pipeline::new(
-            core,
-            render_pass.render_pass.as_ref().unwrap(),
-            vec![
-                camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
-                object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
-                image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
-            ],
-            "shaders/standard.vert",
-            "shaders/standard.frag",
-        );
+        let framebuffers = unsafe {
+            Framebuffers::new(
+                &core.read().unwrap().device,
+                hal::image::Extent { width: viewport.rect.w, height: viewport.rect.h, depth: viewport.depth, },
+                images,
+                image_format,
+                &render_pass,
+                depth_image_stuff,
+            )
+        };
+
+        let camera_uniform = allocator.alloc_uniform();
+        let object_uniform = allocator.alloc_uniform();
+        let image_desc_set = allocator.alloc_desc_set();
+
+        let pipeline = unsafe {
+            Pipeline::new(
+                core,
+                render_pass.render_pass.as_ref().unwrap(),
+                vec![
+                    camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
+                    object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
+                    image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
+                ],
+                "shaders/standard.vert",
+                "shaders/standard.frag",
+            )
+        };
 
         Self {
             core: Arc::clone(core),
@@ -78,6 +95,91 @@ impl <B: hal::Backend> GfxDrawer<B> {
             object_uniform,
             last_drawables: None
         }
+    }
+
+    // TODO -> refactor so this is just a call to alloc_uniform()
+    fn init_uniform() -> Uniform<B> {
+        // let desc_set_layout = ();
+        // let desc_set = ();
+        // Uniform::new()
+    }
+
+    // TODO -> refactor so this is just a call to init_uniform()
+    fn init_camera_uniform() -> Uniform<B> {
+        //      let camera_uniform_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
+        //          &device_state,
+        //          vec![hal::pso::DescriptorSetLayoutBinding {
+        //              binding: 0,
+        //              ty: hal::pso::DescriptorType::Buffer {
+        //                  ty: hal::pso::BufferDescriptorType::Uniform,
+        //                  format: hal::pso::BufferDescriptorFormat::Structured {
+        //                      dynamic_offset: false,
+        //                  }
+        //              },
+        //              count: 1,
+        //              stage_flags: ShaderStageFlags::VERTEX,
+        //              immutable_samplers: false,
+        //          }]
+        //      )));
+
+        //      let camera_uniform_desc_set = Self::create_set(&camera_uniform_desc_set_layout, &mut uniform_desc_pool);
+
+        //      let camera_uniform = Uniform::new(
+        //          &backend_state.adapter_state,
+        //          &device_state,
+        //          &[camera_uniform_buffer_object],
+        //          camera_uniform_desc_set,
+        //          0
+        //      );
+    }
+
+    // TODO -> refactor so this is just a call to init_uniform()
+    fn init_object_uniform() -> Uniform<B> {
+        //      let object_uniform_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
+        //          &device_state,
+        //          vec![hal::pso::DescriptorSetLayoutBinding {
+        //              binding: 0,
+        //              ty: hal::pso::DescriptorType::Buffer {
+        //                  ty: hal::pso::BufferDescriptorType::Uniform,
+        //                  format: hal::pso::BufferDescriptorFormat::Structured {
+        //                      dynamic_offset: true,
+        //                  }
+        //              },
+        //              count: 1,
+        //              stage_flags: ShaderStageFlags::VERTEX,
+        //              immutable_samplers: false,
+        //          }]
+        //      )));
+
+        //      let object_uniform_desc_set = Self::create_set(&object_uniform_desc_set_layout, &mut uniform_desc_pool);
+
+        //      let object_uniform = Uniform::new(
+        //          &backend_state.adapter_state,
+        //          &device_state,
+        //          &[object_uniform_buffer_object, object_uniform_buffer_object],
+        //          object_uniform_desc_set,
+        //          0
+        //      );
+
+    }
+
+    fn init_image_desc_set() {
+        //      let image_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
+        //          &device_state,
+        //          vec![hal::pso::DescriptorSetLayoutBinding {
+        //              binding: 0,
+        //              ty: hal::pso::DescriptorType::Image {
+        //                  ty: hal::pso::ImageDescriptorType::Sampled {
+        //                      with_sampler: true,
+        //                  }
+        //              },
+        //              count: 1,
+        //              stage_flags: ShaderStageFlags::FRAGMENT,
+        //              immutable_samplers: false
+        //          }]
+        //      )));
+
+        //      let image_desc_set = Self::create_set(&image_desc_set_layout, &mut image_desc_pool);
     }
 
     unsafe fn generate_vertex_and_index_buffers(&mut self, meshes: Vec<&Mesh>) {
@@ -338,49 +440,52 @@ pub fn fps_view_matrix(eye: Vector3<f32>, pitch_rad: cgmath::Rad<f32>, yaw_rad: 
 }
 
 impl <B: hal::Backend> Drawer<B> for GfxDrawer<B> {
-    fn draw(&mut self, image_index: usize) {
-        let new_ubo = self.update_camera_uniform_buffer_object(dims, camera_transform);
-        self.camera_uniform.buffer.as_mut().unwrap().update_data(0, &[new_ubo]);
+    fn draw(&mut self, image_index: usize) -> &B::Semaphore {
+        unsafe {
+            let new_ubo = self.update_camera_uniform_buffer_object(dims, camera_transform);
+            self.camera_uniform.buffer.as_mut().unwrap().update_data(0, &[new_ubo]);
 
-        // TODO: THIS NEEDS TO BE REFACTORED
-        let sem_index = self.framebuffers.next_acq_pre_pair_index();
-        let (fid, sid) = self.framebuffers.get_frame_data(Some(image_index), Some(sem_index));
+            // TODO: THIS SHOULD BE REFACTORED
+            let sem_index = self.framebuffers.next_acq_pre_pair_index();
+            let (fid, sid) = self.framebuffers.get_frame_data(Some(image_index), Some(sem_index));
+            let (framebuffer_fence, command_buffer) = fid.unwrap();
+            let (image_acquired_semaphore, image_present_semaphore) = sid.unwrap();
 
-        let (framebuffer_fence, command_buffer) = fid.unwrap();
-        let (image_acquired_semaphore, image_present_semaphore) = sid.unwrap();
+            self
+                .core
+                .read()
+                .unwrap()
+                .device
+                .device
+                .wait_for_fence(framebuffer_fence, !0)
+                .unwrap();
 
-        self
-            .core
-            .read()
-            .unwrap()
-            .device
-            .device
-            .wait_for_fence(framebuffer_fence, !0)
-            .unwrap();
+            self
+                .core
+                .read()
+                .unwrap()
+                .device
+                .device
+                .reset_fence(framebuffer_fence)
+                .unwrap();
 
-        self
-            .core
-            .read()
-            .unwrap()
-            .device
-            .device
-            .reset_fence(framebuffer_fence)
-            .unwrap();
+            let submission = hal::queue::Submission {
+                command_buffers: std::iter::once(&*command_buffer),
+                wait_semaphores: std::iter::once((&*image_acquired_semaphore, hal::pso::PipelineStage::BOTTOM_OF_PIPE)),
+                signal_semaphores: std::iter::once(&*image_present_semaphore),
+            };
 
-        let submission = hal::queue::Submission {
-            command_buffers: std::iter::once(&*command_buffer),
-            wait_semaphores: std::iter::once((&*image_acquired_semaphore, hal::pso::PipelineStage::BOTTOM_OF_PIPE)),
-            signal_semaphores: std::iter::once(&*image_present_semaphore),
-        };
+            self
+                .core
+                .write()
+                .unwrap()
+                .device
+                .queue_group
+                .queues[0]
+                .submit(submission, Some(framebuffer_fence));
 
-        self
-            .core
-            .write()
-            .unwrap()
-            .device
-            .queue_group
-            .queues[0]
-            .submit(submission, Some(framebuffer_fence));
+            image_acquired_semaphore
+        }
     }
 }
 
@@ -726,6 +831,12 @@ impl<B: hal::Backend> Framebuffers<B> {
         ret
     }
 
+    // struct FrameData {
+    //     framebuffer_fence: B::Fence,
+    //     command_buffer: B::CommandBuffer,
+    //     image_acquired_semaphore: B::Semaphore,
+    //     image_present_sempahore: B::Semaphore,
+    // }
     fn get_frame_data(
         &mut self,
         frame_id: Option<usize>,

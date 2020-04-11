@@ -22,59 +22,8 @@ use hal::format::{Format, Swizzle, Aspects};
    //          )
    //      );
 
-   //      let camera_uniform_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
-   //          &device_state,
-   //          vec![hal::pso::DescriptorSetLayoutBinding {
-   //              binding: 0,
-   //              ty: hal::pso::DescriptorType::Buffer {
-   //                  ty: hal::pso::BufferDescriptorType::Uniform,
-   //                  format: hal::pso::BufferDescriptorFormat::Structured {
-   //                      dynamic_offset: false,
-   //                  }
-   //              },
-   //              count: 1,
-   //              stage_flags: ShaderStageFlags::VERTEX,
-   //              immutable_samplers: false,
-   //          }]
-   //      )));
 
-   //      let camera_uniform_desc_set = Self::create_set(&camera_uniform_desc_set_layout, &mut uniform_desc_pool);
-
-   //      let object_uniform_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
-   //          &device_state,
-   //          vec![hal::pso::DescriptorSetLayoutBinding {
-   //              binding: 0,
-   //              ty: hal::pso::DescriptorType::Buffer {
-   //                  ty: hal::pso::BufferDescriptorType::Uniform,
-   //                  format: hal::pso::BufferDescriptorFormat::Structured {
-   //                      dynamic_offset: true,
-   //                  }
-   //              },
-   //              count: 1,
-   //              stage_flags: ShaderStageFlags::VERTEX,
-   //              immutable_samplers: false,
-   //          }]
-   //      )));
-
-   //      let object_uniform_desc_set = Self::create_set(&object_uniform_desc_set_layout, &mut uniform_desc_pool);
-
-   //      let image_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
-   //          &device_state,
-   //          vec![hal::pso::DescriptorSetLayoutBinding {
-   //              binding: 0,
-   //              ty: hal::pso::DescriptorType::Image {
-   //                  ty: hal::pso::ImageDescriptorType::Sampled {
-   //                      with_sampler: true,
-   //                  }
-   //              },
-   //              count: 1,
-   //              stage_flags: ShaderStageFlags::FRAGMENT,
-   //              immutable_samplers: false
-   //          }]
-   //      )));
-
-   //      let image_desc_set = Self::create_set(&image_desc_set_layout, &mut image_desc_pool);
-   //      let mut staging_pool = device_state
+  //      let mut staging_pool = device_state
    //          .read()
    //          .unwrap()
    //          .device
@@ -107,55 +56,6 @@ use hal::format::{Format, Swizzle, Aspects};
 
    //      let mut image_states = HashMap::new();
    //      image_states.insert(RenderKey::from(&None), base_image_state);
-
-   //      // TODO -> merge the camera transform and ubo initialization
-
-   //      let font_tex_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
-   //          &device_state,
-   //          vec![hal::pso::DescriptorSetLayoutBinding {
-   //              binding: 0,
-   //              ty: hal::pso::DescriptorType::Sampler,
-   //              count: 1,
-   //              stage_flags: ShaderStageFlags::FRAGMENT,
-   //              immutable_samplers: false
-   //          }]
-   //      )));
-
-   //      let my_temp_view = Matrix4::look_at(
-   //          cgmath::Point3::new(5.0, 5.0, 5.0),
-   //          cgmath::Point3::new(0.0, 0.0, 0.0),
-   //          Vector3::new(0.0, 1.0, 0.0)
-   //      );
-   //      let mut my_temp_proj = perspective(
-   //          Deg(45.0),
-   //          DIMS.width as f32 / DIMS.height as f32,
-   //          0.1,
-   //          1000.0
-   //      );
-   //      my_temp_proj.y.y *= -1.0;
-
-   //      let camera_uniform_buffer_object = CameraUniformBufferObject::new(
-   //          my_temp_view,
-   //          my_temp_proj
-   //      );
-   //      let camera_uniform = Uniform::new(
-   //          &backend_state.adapter_state,
-   //          &device_state,
-   //          &[camera_uniform_buffer_object],
-   //          camera_uniform_desc_set,
-   //          0
-   //      );
-
-   //      let object_uniform_buffer_object = ObjectUniformBufferObject::new(
-   //          Matrix4::identity(),
-   //      );
-   //      let object_uniform = Uniform::new(
-   //          &backend_state.adapter_state,
-   //          &device_state,
-   //          &[object_uniform_buffer_object, object_uniform_buffer_object],
-   //          object_uniform_desc_set,
-   //          0
-   //      );
 
    //      let depth_image_stuff = create_image_stuff::<B>(
    //          &device_state.read().unwrap().device,
