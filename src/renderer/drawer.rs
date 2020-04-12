@@ -1,16 +1,17 @@
-use cgmath::{Vector3, Matrix4};
 use std::sync::{Arc, RwLock};
 use std::collections::{HashMap, BTreeMap};
 use std::ops::DerefMut;
 
-use crate::renderer::allocator::COLOR_RANGE;
 use crate::components::{mesh::Mesh, texture::Texture, transform::Transform};
 use crate::primitives::{drawable::Drawable, vertex::Vertex};
 use crate::primitives::uniform_buffer_object::{CameraUniformBufferObject, ObjectUniformBufferObject};
+use crate::renderer::allocator::{COLOR_RANGE, Allocator};
 use crate::renderer::types::{Image, Uniform, Buffer, DescSet, DescSetLayout};
 use crate::renderer::render_key::RenderKey;
 use crate::renderer::core::RendererCore;
 use crate::utils::data_path;
+
+use cgmath::{Vector3, Matrix4};
 
 use itertools::Itertools;
 
@@ -25,8 +26,9 @@ pub(crate) trait Drawer<B: hal::Backend> {
     fn draw(&mut self, image_index: usize);
 }
 
-pub(crate) struct GfxDrawer<B: hal::Backend> {
+pub(crate) struct GfxDrawer<B: hal::Backend, A: Allocator<B>> {
     core: Arc<RwLock<RendererCore<B>>>,
+    allocator: A,
 
     framebuffers: Framebuffers<B>,
     render_pass: RenderPass<B>,
@@ -45,11 +47,11 @@ pub(crate) struct GfxDrawer<B: hal::Backend> {
     last_drawables: Option<Vec<Drawable>>,
 }
 
-impl <B: hal::Backend> GfxDrawer<B> {
-    pub fn new(core: &Arc<RwLock<RendererCore<B>>>, viewport: Viewport) -> Self {
+impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
+    pub fn new(core: &Arc<RwLock<RendererCore<B>>>, allocator: A, viewport: Viewport) -> Self {
         let render_pass = RenderPass::new(
             core,
-            &swapchain,
+            swapchain_format,
         );
 
         let framebuffers = unsafe {
@@ -83,6 +85,7 @@ impl <B: hal::Backend> GfxDrawer<B> {
 
         Self {
             core: Arc::clone(core),
+            allocator,
             framebuffers,
             render_pass,
             pipeline,
@@ -439,7 +442,7 @@ pub fn fps_view_matrix(eye: Vector3<f32>, pitch_rad: cgmath::Rad<f32>, yaw_rad: 
     view_matrix
 }
 
-impl <B: hal::Backend> Drawer<B> for GfxDrawer<B> {
+impl <B: hal::Backend, A: Allocator<B>> Drawer<B> for GfxDrawer<B, A> {
     fn draw(&mut self, image_index: usize) -> &B::Semaphore {
         unsafe {
             let new_ubo = self.update_camera_uniform_buffer_object(dims, camera_transform);
@@ -495,7 +498,7 @@ struct RenderPass<B: hal::Backend> {
 }
 
 impl<B: hal::Backend> RenderPass<B> {
-    fn new(core: &Arc<RwLock<RendererCore<B>>>, swapchain: &crate::renderer::presenter::Swapchain<B>) -> Self {
+    fn new(core: &Arc<RwLock<RendererCore<B>>>, swapchain_format: hal::format::Format) -> Self {
         let device = &core
             .read()
             .unwrap()
@@ -503,7 +506,7 @@ impl<B: hal::Backend> RenderPass<B> {
             .device;
 
         let color_attachment = hal::pass::Attachment {
-            format: Some(swapchain.format),
+            format: Some(swapchain_format),
             samples: 1,
             ops: hal::pass::AttachmentOps::new(
                 hal::pass::AttachmentLoadOp::Clear,
@@ -755,7 +758,7 @@ impl<B: hal::Backend> Framebuffers<B> {
             let fbos = pairs
                 .iter()
                 .map(|&(_, ref image_view)| {
-                    core.
+                    core
                         .read()
                         .unwrap()
                         .device

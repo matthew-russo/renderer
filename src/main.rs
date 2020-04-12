@@ -102,15 +102,13 @@ fn main() {
 
     let event_loop = winit::event_loop::EventLoop::new();
     let renderer_core = Arc::new(RwLock::new(RendererCore::new(default_logical_size, &event_loop)));
+    let allocator = GfxAllocator::new(&renderer_core);
 
     #[cfg(feature = "xr")]
-    let presenter = XrPresenter::new();
+    let presenter = XrPresenter::new(&renderer_core, allocator);
 
     #[cfg(not(feature = "xr"))]
-    let presenter = MonitorPresenter::new(&renderer_core);
-
-    let allocator = GfxAllocator::new(&renderer_core);
-    let drawer = GfxDrawer::new(&renderer_core, presenter.viewport());
+    let presenter = MonitorPresenter::new(&renderer_core, allocator);
 
     let event_handler = Arc::new(RwLock::new(EventHandler::new()));
 

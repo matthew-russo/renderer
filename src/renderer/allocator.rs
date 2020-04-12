@@ -121,6 +121,76 @@ impl <B: hal::Backend> GfxAllocator<B> {
             desc_set_layout: desc_set_layout.clone()
         }
     }
+
+    fn transfer_image(&self, image: &B::Image, image_upload_buffer: &B::Buffer, image_data: ImageData) {
+        let mut cmd_buffer = command_pool.allocate_one(hal::command::Level::Primary);
+        cmd_buffer.begin_primary(hal::command::CommandBufferFlags::ONE_TIME_SUBMIT);
+
+        let image_barrier = hal::memory::Barrier::Image {
+            states: (hal::image::Access::empty(), hal::image::Layout::Undefined)..(hal::image::Access::TRANSFER_WRITE, hal::image::Layout::TransferDstOptimal),
+            target: image,
+            families: None,
+            range: COLOR_RANGE.clone(),
+        };
+
+        cmd_buffer.pipeline_barrier(
+            hal::pso::PipelineStage::TOP_OF_PIPE..hal::pso::PipelineStage::TRANSFER,
+            hal::memory::Dependencies::empty(),
+            &[image_barrier],
+        );
+
+        cmd_buffer.copy_buffer_to_image(
+            image_upload_buffer,
+            image,
+            hal::image::Layout::TransferDstOptimal,
+            &[hal::command::BufferImageCopy {
+                buffer_offset: 0,
+                buffer_width: row_pitch / (image_stride as u32),
+                buffer_height: image_data.height as u32,
+                image_layers: hal::image::SubresourceLayers {
+                    aspects: hal::format::Aspects::COLOR,
+                    level: 0,
+                    layers: 0..1,
+                },
+                image_offset: hal::image::Offset { x: 0, y: 0, z: 0 },
+                image_extent: hal::image::Extent {
+                    width: image_data.width,
+                    height: image_data.height,
+                    depth: 1,
+                },
+            }],
+        );
+
+        let image_barrier = hal::memory::Barrier::Image {
+            states: (hal::image::Access::TRANSFER_WRITE, hal::image::Layout::TransferDstOptimal)..(hal::image::Access::SHADER_READ, hal::image::Layout::ShaderReadOnlyOptimal),
+            target: &image,
+            families: None,
+            range: COLOR_RANGE.clone(),
+        };
+
+        cmd_buffer.pipeline_barrier(
+            hal::pso::PipelineStage::TRANSFER..hal::pso::PipelineStage::FRAGMENT_SHADER,
+            hal::memory::Dependencies::empty(),
+            &[image_barrier],
+        );
+
+        cmd_buffer.finish();
+
+        self
+            .core
+            .read()
+            .unwrap()
+            .device
+            .queue_group
+            .queues[0]
+            .submit_without_semaphores(Some(&cmd_buffer), Some(&mut transferred_image_fence));
+    }
+
+    fn run_with_device<T>(&self, func: impl Fn(&B::Device) -> T) -> T {
+        let readable_core = self.core.read().unwrap();
+        let raw_device = &readable_core.device.device;
+        func(raw_device)
+    }
 }
 
 impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
@@ -167,15 +237,15 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         device.bind_buffer_memory(&memory, 0, &mut buffer).unwrap();
 
         Buffer::new(
-            Some(memory),
             Some(buffer),
+            Some(memory),
             false,
             mem_req.size,
             padded_stride,
         )
     }
 
-    fn alloc_uniform(&mut self,
+    fn alloc_uniform<T>(&mut self,
                      data: &[T],
                      desc: DescSet<B>,
                      binding: u32) -> Uniform<B>
@@ -183,16 +253,16 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
               T: std::fmt::Debug
     {
         let buffer = Some(self.alloc_buffer(
-            &core,
+            &self.core,
             &data,
-            core.read().unwrap().backend.adapter.limits.min_uniform_buffer_offset_alignment,
+            self.core.read().unwrap().backend.adapter.limits.min_uniform_buffer_offset_alignment,
             65536,
             hal::buffer::Usage::UNIFORM,
-            &core.read().unwrap().backend.adapter.memory_types
+            &self.core.read().unwrap().backend.adapter.memory_types
         ));
 
         desc.write(
-            &mut core.read().unwrap().device.device,
+            &mut self.core.read().unwrap().device.device,
             vec![DescSetWrite {
                 binding,
                 array_offset: 0,
@@ -213,36 +283,42 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
                    _usage: hal::buffer::Usage,
                    img_path: &String,
                    sampler_desc: &hal::image::SamplerDesc,) -> Image<B> {
-        let mut staging_pool = core
-            .read()
-            .unwrap()
-            .device
-            .device
-            .create_command_pool(
-                core
-                    .read()
-                    .unwrap()
-                    .device
-                    .queue_group
-                    .family,
-                hal::pool::CommandPoolCreateFlags::empty(),
-            )
-            .expect("Can't create staging command pool");
+        let mut staging_pool = self.run_with_device(|device| {
+            device
+                .create_command_pool(
+                    self
+                        .core
+                        .read()
+                        .unwrap()
+                        .device
+                        .queue_group
+                        .family,
+                    hal::pool::CommandPoolCreateFlags::empty(),
+                )
+                .expect("Can't create staging command pool");
+        });
 
         let image_desc_set = Self::create_set(self.image_desc_set_layout.as_ref().unwrap(), self.image_desc_pool.as_mut().unwrap());
-        let row_alignment_mask = core.read().unwrap().backend.adapter.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
+        let row_alignment_mask = self.core.read().unwrap().backend.adapter.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
         let image_data = load_image_data(img_path, row_alignment_mask);
 
         let kind = hal::image::Kind::D2(image_data.width as hal::image::Size, image_data.height as hal::image::Size, 1, 1);
-        let row_alignment_mask = core.read().unwrap().backend.adapter.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
+        let row_alignment_mask = self.core.read().unwrap().backend.adapter.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
         let image_stride = 4_usize;
         let row_pitch = (image_data.width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
         let upload_size = (image_data.height * row_pitch) as u64;
 
-        let mut image_upload_buffer = core.read().unwrap().device.device.create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC).unwrap();
-        let image_mem_reqs = core.read().unwrap().device.device.get_buffer_requirements(&image_upload_buffer);
+        let mut image_upload_buffer = self.run_with_device(|device| {
+            device
+                .create_buffer(upload_size, hal::buffer::Usage::TRANSFER_SRC)
+                .unwrap()
+        });
+        let image_mem_reqs = self.run_with_device(|device| {
+            device.get_buffer_requirements(&image_upload_buffer)
+        });
 
-        let upload_type = core
+        let upload_type = self
+            .core
             .read()
             .unwrap()
             .backend
@@ -259,37 +335,54 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
             .into();
 
         let image_upload_memory = {
-            let memory = core.read().unwrap().device.device.allocate_memory(upload_type, image_mem_reqs.size).unwrap();
-            core.read().unwrap().device.device.bind_buffer_memory(&memory, 0, &mut image_upload_buffer).unwrap();
-            let mapping = core.read().unwrap().device.device.map_memory(&memory, 0..upload_size).unwrap();
+            let memory = self.run_with_device(|device| {
+                let memory = device
+                    .allocate_memory(upload_type, image_mem_reqs.size)
+                    .unwrap();
 
-            // TODO -> duplicated in load_image_data
-            for y in 0..image_data.height as usize {
-                let row = &(*image_data.data)[y * (image_data.width as usize) * image_stride..(y+1) * (image_data.width as usize) * image_stride];
-                std::ptr::copy_nonoverlapping(
-                    row.as_ptr(),
-                    mapping.offset(y as isize * row_pitch as isize),
-                    image_data.width as usize * image_stride
-                );
-            }
+                device
+                    .bind_buffer_memory(&memory, 0, &mut image_upload_buffer)
+                    .unwrap();
 
-            core.read().unwrap().device.device.unmap_memory(&memory);
-            memory
+                let mapping = device
+                    .map_memory(&memory, 0..upload_size)
+                    .unwrap();
+
+                // TODO -> duplicated in load_image_data
+                for y in 0..image_data.height as usize {
+                    let row = &(*image_data.data)[y * (image_data.width as usize) * image_stride..(y+1) * (image_data.width as usize) * image_stride];
+                    std::ptr::copy_nonoverlapping(
+                        row.as_ptr(),
+                        mapping.offset(y as isize * row_pitch as isize),
+                        image_data.width as usize * image_stride
+                    );
+                }
+
+                device.unmap_memory(&memory);
+
+                memory
+            });
         };
 
-        let mut image = core.read().unwrap().device.device.create_image(
-            kind,
-            1,
-            image_data.format,
-            hal::image::Tiling::Optimal,
-            hal::image::Usage::TRANSFER_DST | hal::image::Usage::SAMPLED,
-            hal::image::ViewCapabilities::empty(),
-        )
-            .unwrap();
+        let mut (image, image_req) = self.run_with_device(|device| {
+            let image = device
+                .create_image(
+                    kind,
+                    1,
+                    image_data.format,
+                    hal::image::Tiling::Optimal,
+                    hal::image::Usage::TRANSFER_DST | hal::image::Usage::SAMPLED,
+                    hal::image::ViewCapabilities::empty(),
+                )
+                .unwrap();
 
-        let image_req = core.read().unwrap().device.device.get_image_requirements(&image);
+            let image_req = device.get_image_requirements(&image);
 
-        let device_type = core
+            (image, image_req)
+        });
+
+        let device_type = self
+            .core
             .read()
             .unwrap()
             .backend
@@ -304,106 +397,45 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
             .unwrap()
             .into();
 
-        let image_memory = core.read().unwrap().device.device.allocate_memory(device_type, image_req.size).unwrap();
-        core.read().unwrap().device.device.bind_image_memory(&image_memory, 0, &mut image).unwrap();
+        self.run_with_device(|device| {
+            let image_memory = device
+                .allocate_memory(device_type, image_req.size)
+                .unwrap();
+            device
+                .bind_image_memory(&image_memory, 0, &mut image)
+                .unwrap();
 
-        let mut transferred_image_fence = core.read().unwrap().device.device.create_fence(false).expect("Can't create fence");
+            let transferred_image_fence = device
+                .create_fence(false)
+                .expect("Can't create fence");
 
-        let mut cmd_buffer = command_pool.allocate_one(hal::command::Level::Primary);
-        cmd_buffer.begin_primary(hal::command::CommandBufferFlags::ONE_TIME_SUBMIT);
+            self.transfer_image(&image, &image_upload_buffer, image_data);
 
-        let image_barrier = hal::memory::Barrier::Image {
-            states: (hal::image::Access::empty(), hal::image::Layout::Undefined)..(hal::image::Access::TRANSFER_WRITE, hal::image::Layout::TransferDstOptimal),
-            target: &image,
-            families: None,
-            range: COLOR_RANGE.clone(),
-        };
+            device
+                .wait_for_fence(&transferred_image_fence, !0)
+                .unwrap();
+            device.destroy_buffer(image_upload_buffer);
+            device.free_memory(image_upload_memory);
+        });
 
-        cmd_buffer.pipeline_barrier(
-            hal::pso::PipelineStage::TOP_OF_PIPE..hal::pso::PipelineStage::TRANSFER,
-            hal::memory::Dependencies::empty(),
-            &[image_barrier],
-        );
+        let image_view = self.run_with_device(|device| {
+            device
+                .create_image_view(
+                    &image,
+                    hal::image::ViewKind::D2,
+                    image_data.format,
+                    hal::format::Swizzle::NO,
+                    COLOR_RANGE.clone(),
+                )
+                .unwrap()
+        });
 
-        cmd_buffer.copy_buffer_to_image(
-            &image_upload_buffer,
-            &image,
-            hal::image::Layout::TransferDstOptimal,
-            &[hal::command::BufferImageCopy {
-                buffer_offset: 0,
-                buffer_width: row_pitch / (image_stride as u32),
-                buffer_height: image_data.height as u32,
-                image_layers: hal::image::SubresourceLayers {
-                    aspects: hal::format::Aspects::COLOR,
-                    level: 0,
-                    layers: 0..1,
-                },
-                image_offset: hal::image::Offset { x: 0, y: 0, z: 0 },
-                image_extent: hal::image::Extent {
-                    width: image_data.width,
-                    height: image_data.height,
-                    depth: 1,
-                },
-            }],
-        );
-
-        let image_barrier = hal::memory::Barrier::Image {
-            states: (hal::image::Access::TRANSFER_WRITE, hal::image::Layout::TransferDstOptimal)..(hal::image::Access::SHADER_READ, hal::image::Layout::ShaderReadOnlyOptimal),
-            target: &image,
-            families: None,
-            range: COLOR_RANGE.clone(),
-        };
-
-        cmd_buffer.pipeline_barrier(
-            hal::pso::PipelineStage::TRANSFER..hal::pso::PipelineStage::FRAGMENT_SHADER,
-            hal::memory::Dependencies::empty(),
-            &[image_barrier],
-        );
-
-        cmd_buffer.finish();
-
-        core
-            .read()
-            .unwrap()
-            .device
-            .queue_group
-            .queues[0]
-            .submit_without_semaphores(Some(&cmd_buffer), Some(&mut transferred_image_fence));
-
-        core
-            .read()
-            .unwrap()
-            .device
-            .device
-            .wait_for_fence(&transferred_image_fence, !0)
-            .unwrap();
-
-        core.read().unwrap().device.device.destroy_buffer(image_upload_buffer);
-        core.read().unwrap().device.device.free_memory(image_upload_memory);
-
-        let image_view = core
-            .read()
-            .unwrap()
-            .device
-            .device
-            .create_image_view(
-                &image,
-                hal::image::ViewKind::D2,
-                image_data.format,
-                hal::format::Swizzle::NO,
-                COLOR_RANGE.clone(),
-            ).unwrap();
-
-        let sampler = core
-            .read()
-            .unwrap()
-            .device
-            .device
-            .create_sampler(sampler_desc)
-            .expect("Can't create sampler");
+        let sampler = self.run_with_device(|device| {
+            device.create_sampler(sampler_desc).expect("can't create sampler")
+        });
 
         desc_set.write(
-            &mut core.read().unwrap().device.device,
+            &mut self.core.read().unwrap().device.device,
             vec![
                 DescSetWrite {
                     binding: 0,
@@ -428,15 +460,11 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
     }
 
     fn alloc_desc_set_layout(&mut self) -> DescSetLayout<B> {
-        let layout = unsafe {
-            self
-                .core
-                .read()
-                .unwrap()
-                .device
-                .device
+        let layout = self.run_with_device(|device| {
+            device
                 .create_descriptor_set_layout(bindings, &[])
-        }.expect("Can't create descriptor set layout");
+                .expect("can't create descriptor set layout")
+        });
 
         DescSetLayout {
             layout: Some(layout),

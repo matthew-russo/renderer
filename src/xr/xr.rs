@@ -154,59 +154,9 @@ impl VulkanXrSession {
     }
 
     fn draw(&mut self) {
-        let state = self.frame_waiter.wait().unwrap();
-        let image = self.swapchain.unwrap().acquire_image().unwrap();
-        self.swapchain.unwrap().wait_image(openxr::Duration::INFINITE).unwrap();
-
-        self.frame_stream.begin().unwrap();
-
-        if state.should_render {
-            // draw scene
-            renderer.draw(i);
-        }
-
-        let (view_flags, views) = self.session
-            .locate_views(
-                openxr::ViewConfigurationType::PRIMARY_STEREO,
-                state.predicted_display_time,
-                self.world_space.as_ref().unwrap(),
-            )
-            .unwrap();
-
-        self.swapchain.unwrap().release_image().unwrap();
-        self.frame_stream
-            .end(
-                state.predicted_display_time,
-                openxr::EnvironmentBlendMode::OPAQUE,
-                &[&openxr::CompositionLayerProjection::new()
-                    .space(self.world_space.as_ref().unwrap())
-                    .views(&[
-                        openxr::CompositionLayerProjectionView::new()
-                            .pose(views[0].pose)
-                            .fov(views[0].fov)
-                            .sub_image(
-                                openxr::SwapchainSubImage::new()
-                                    .swapchain(&self.swapchain.unwrap())
-                                    .image_array_index(0)
-                                    .image_rect(openxr::Rect2Di {
-                                        offset: openxr::Offset2Di { x: 0, y: 0 },
-                                        extent: self.resolution.unwrap(),
-                                    }),
-                            ),
-                        openxr::CompositionLayerProjectionView::new()
-                            .pose(views[1].pose)
-                            .fov(views[1].fov)
-                            .sub_image(
-                                openxr::SwapchainSubImage::new()
-                                    .swapchain(&self.swapchain.unwrap())
-                                    .image_array_index(1)
-                                    .image_rect(openxr::Rect2Di {
-                                        offset: openxr::Offset2Di { x: 0, y: 0 },
-                                        extent: self.resolution.unwrap(),
-                                    }),
-                            )
-                    ])]
-            )
-            .unwrap();
+        // if state.should_render {
+        //     // draw scene
+        //     renderer.draw(i);
+        // }
     }
 }

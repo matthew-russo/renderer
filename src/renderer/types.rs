@@ -102,7 +102,7 @@ impl<B: hal::Backend> Image<B> {
 }
 
 
-struct DescSetWrite<WI> {
+pub(crate) struct DescSetWrite<WI> {
     binding: hal::pso::DescriptorBinding,
     array_offset: hal::pso::DescriptorArrayIndex,
     descriptors: WI
