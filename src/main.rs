@@ -265,7 +265,6 @@ fn start_engine<B: hal::Backend, D: Drawer<B>, P: Presenter<B>>(mut drawer: D, m
 
             unsafe {
                 drawer.map_uniform_data(uniform_data);
-
                 let image_index = presenter.acquire_image().unwrap();
                 drawer.draw(image_index as usize);
                 presenter.present();

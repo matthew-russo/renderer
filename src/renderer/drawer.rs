@@ -1,6 +1,5 @@
 use std::sync::{Arc, RwLock};
 use std::collections::{HashMap, BTreeMap};
-use std::ops::DerefMut;
 
 use crate::components::{mesh::Mesh, texture::Texture, transform::Transform};
 use crate::primitives::{drawable::Drawable, vertex::Vertex};
@@ -23,7 +22,7 @@ use hal::queue::CommandQueue;
 
 
 pub(crate) trait Drawer<B: hal::Backend> {
-    fn draw(&mut self, image_index: usize);
+    fn draw(&mut self, image_index: usize) -> &B::Semaphore;
 }
 
 pub(crate) struct GfxDrawer<B: hal::Backend, A: Allocator<B>> {
@@ -35,7 +34,7 @@ pub(crate) struct GfxDrawer<B: hal::Backend, A: Allocator<B>> {
     pipeline: Pipeline<B>,
     viewport: Viewport,
 
-    image_desc_set_layout: Option<Arc<RwLock<DescSetLayout<B>>>>,
+    image_desc_set_layout: DescSetLayout<B>,
     images: HashMap<RenderKey, Image<B>>,
 
     vertex_buffer: Option<Buffer<B>>,
@@ -48,7 +47,7 @@ pub(crate) struct GfxDrawer<B: hal::Backend, A: Allocator<B>> {
 }
 
 impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
-    pub fn new(core: &Arc<RwLock<RendererCore<B>>>, allocator: A, viewport: Viewport) -> Self {
+    pub fn new(core: &Arc<RwLock<RendererCore<B>>>, mut allocator: A, viewport: Viewport) -> Self {
         let render_pass = RenderPass::new(
             core,
             swapchain_format,
@@ -56,7 +55,7 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
 
         let framebuffers = unsafe {
             Framebuffers::new(
-                &core.read().unwrap().device,
+                &core,
                 hal::image::Extent { width: viewport.rect.w, height: viewport.rect.h, depth: viewport.depth, },
                 images,
                 image_format,
@@ -65,9 +64,52 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
             )
         };
 
-        let camera_uniform = allocator.alloc_uniform();
-        let object_uniform = allocator.alloc_uniform();
-        let image_desc_set = allocator.alloc_desc_set();
+        let camera_uniform = Self::init_uniform(
+            &mut allocator,
+            &vec![hal::pso::DescriptorSetLayoutBinding {
+                binding: 0,
+                ty: hal::pso::DescriptorType::Buffer {
+                    ty: hal::pso::BufferDescriptorType::Uniform,
+                    format: hal::pso::BufferDescriptorFormat::Structured {
+                        dynamic_offset: false,
+                    }
+                },
+                count: 1,
+                stage_flags: hal::pso::ShaderStageFlags::VERTEX,
+                immutable_samplers: false,
+            }],
+            &[CameraUniformBufferObject::default()]
+        );
+
+        let object_uniform = Self::init_uniform(
+            &mut allocator,
+            &vec![hal::pso::DescriptorSetLayoutBinding {
+                binding: 0,
+                ty: hal::pso::DescriptorType::Buffer {
+                    ty: hal::pso::BufferDescriptorType::Uniform,
+                    format: hal::pso::BufferDescriptorFormat::Structured {
+                        dynamic_offset: true,
+                    }
+                },
+                count: 1,
+                stage_flags: hal::pso::ShaderStageFlags::VERTEX,
+                immutable_samplers: false,
+            }],
+            &[ObjectUniformBufferObject::default()],
+        );
+
+        let image_desc_set_layout = allocator.alloc_desc_set_layout(
+            &vec![hal::pso::DescriptorSetLayoutBinding {
+                binding: 0,
+                ty: hal::pso::DescriptorType::Image {
+                    ty: hal::pso::ImageDescriptorType::Sampled {
+                        with_sampler: true,
+                    }
+                },
+                count: 1,
+                stage_flags: ShaderStageFlags::FRAGMENT,
+                immutable_samplers: false
+            }]);
 
         let pipeline = unsafe {
             Pipeline::new(
@@ -76,7 +118,7 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
                 vec![
                     camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
                     object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
-                    image_desc_set_layout.read().unwrap().layout.as_ref().unwrap()
+                    image_desc_set_layout
                 ],
                 "shaders/standard.vert",
                 "shaders/standard.frag",
@@ -90,7 +132,7 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
             render_pass,
             pipeline,
             viewport,
-            image_desc_set_layout: None,
+            image_desc_set_layout,
             images: HashMap::new(),
             vertex_buffer: None,
             index_buffer: None,
@@ -100,86 +142,17 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
         }
     }
 
-    // TODO -> refactor so this is just a call to alloc_uniform()
-    fn init_uniform() -> Uniform<B> {
-        // let desc_set_layout = ();
-        // let desc_set = ();
-        // Uniform::new()
-    }
-
-    // TODO -> refactor so this is just a call to init_uniform()
-    fn init_camera_uniform() -> Uniform<B> {
-        //      let camera_uniform_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
-        //          &device_state,
-        //          vec![hal::pso::DescriptorSetLayoutBinding {
-        //              binding: 0,
-        //              ty: hal::pso::DescriptorType::Buffer {
-        //                  ty: hal::pso::BufferDescriptorType::Uniform,
-        //                  format: hal::pso::BufferDescriptorFormat::Structured {
-        //                      dynamic_offset: false,
-        //                  }
-        //              },
-        //              count: 1,
-        //              stage_flags: ShaderStageFlags::VERTEX,
-        //              immutable_samplers: false,
-        //          }]
-        //      )));
-
-        //      let camera_uniform_desc_set = Self::create_set(&camera_uniform_desc_set_layout, &mut uniform_desc_pool);
-
-        //      let camera_uniform = Uniform::new(
-        //          &backend_state.adapter_state,
-        //          &device_state,
-        //          &[camera_uniform_buffer_object],
-        //          camera_uniform_desc_set,
-        //          0
-        //      );
-    }
-
-    // TODO -> refactor so this is just a call to init_uniform()
-    fn init_object_uniform() -> Uniform<B> {
-        //      let object_uniform_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
-        //          &device_state,
-        //          vec![hal::pso::DescriptorSetLayoutBinding {
-        //              binding: 0,
-        //              ty: hal::pso::DescriptorType::Buffer {
-        //                  ty: hal::pso::BufferDescriptorType::Uniform,
-        //                  format: hal::pso::BufferDescriptorFormat::Structured {
-        //                      dynamic_offset: true,
-        //                  }
-        //              },
-        //              count: 1,
-        //              stage_flags: ShaderStageFlags::VERTEX,
-        //              immutable_samplers: false,
-        //          }]
-        //      )));
-
-        //      let object_uniform_desc_set = Self::create_set(&object_uniform_desc_set_layout, &mut uniform_desc_pool);
-
-        //      let object_uniform = Uniform::new(
-        //          &backend_state.adapter_state,
-        //          &device_state,
-        //          &[object_uniform_buffer_object, object_uniform_buffer_object],
-        //          object_uniform_desc_set,
-        //          0
-        //      );
-
+    // TODO -> is there a way to streamline uniform allocation so that it encapsulates DescSetLayouts and DescSets?
+    fn init_uniform<T>(allocator: &mut A, bindings: &[hal::pso::DescriptorSetLayoutBinding], data: &[T]) -> Uniform<B> {
+        let desc_set_layout = allocator.alloc_desc_set_layout(bindings);
+        let desc_set = allocator.alloc_desc_set(&desc_set_layout);
+        allocator.alloc_uniform(data, desc_set, 0)
     }
 
     fn init_image_desc_set() {
         //      let image_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
         //          &device_state,
-        //          vec![hal::pso::DescriptorSetLayoutBinding {
-        //              binding: 0,
-        //              ty: hal::pso::DescriptorType::Image {
-        //                  ty: hal::pso::ImageDescriptorType::Sampled {
-        //                      with_sampler: true,
-        //                  }
-        //              },
-        //              count: 1,
-        //              stage_flags: ShaderStageFlags::FRAGMENT,
-        //              immutable_samplers: false
-        //          }]
+        //
         //      )));
 
         //      let image_desc_set = Self::create_set(&image_desc_set_layout, &mut image_desc_pool);
@@ -208,22 +181,18 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
             .collect::<Vec<u32>>();
 
         let vertex_alignment = self.core.read().unwrap().backend.adapter.limits.min_vertex_input_binding_stride_alignment;
-        let vertex_buffer = Buffer::new(
-            &self.core,
+        let vertex_buffer = self.allocator.alloc_buffer(
             &vertices,
             vertex_alignment,
             65536,
             hal::buffer::Usage::VERTEX,
-            &self.core.read().unwrap().backend.adapter.memory_types,
         );
 
-        let index_buffer = Buffer::new(
-            &self.core,
+        let index_buffer = self.allocator.alloc_buffer(
             &indices,
             1,
             65536,
             hal::buffer::Usage::INDEX,
-            &self.core.read().unwrap().backend.adapter.memory_types,
         );
 
         self.vertex_buffer = Some(vertex_buffer);
@@ -267,11 +236,12 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
     }
 
     pub unsafe fn map_uniform_data(&mut self, ubos: Vec<ObjectUniformBufferObject>) {
-        self.object_uniform
+        self
+            .object_uniform
             .buffer
             .as_mut()
             .unwrap()
-            .update_data(0, &ubos);
+            .update_data(&self.core, 0, &ubos);
     }
 
     unsafe fn generate_images(&mut self, textures: Vec<&Texture>) {
@@ -286,22 +256,13 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
         }
 
         for texture in new_textures.into_iter() {
-            let image = Image::new(
-                self.core.read().unwrap().deref_mut(),
+            let image = self.allocator.alloc_image(
                 hal::buffer::Usage::TRANSFER_SRC,
                 &texture.path,
                 &hal::image::SamplerDesc::new(hal::image::Filter::Linear, hal::image::WrapMode::Clamp),
             );
             self.images.insert(RenderKey::from(texture), image);
         }
-
-        self
-            .core
-            .read()
-            .unwrap()
-            .device
-            .device
-            .destroy_command_pool(staging_pool);
     }
 
     // TODO -> this shouldn't be in drawer
@@ -446,7 +407,7 @@ impl <B: hal::Backend, A: Allocator<B>> Drawer<B> for GfxDrawer<B, A> {
     fn draw(&mut self, image_index: usize) -> &B::Semaphore {
         unsafe {
             let new_ubo = self.update_camera_uniform_buffer_object(dims, camera_transform);
-            self.camera_uniform.buffer.as_mut().unwrap().update_data(0, &[new_ubo]);
+            self.camera_uniform.buffer.as_mut().unwrap().update_data(&self.core, 0, &[new_ubo]);
 
             // TODO: THIS SHOULD BE REFACTORED
             let sem_index = self.framebuffers.next_acq_pre_pair_index();

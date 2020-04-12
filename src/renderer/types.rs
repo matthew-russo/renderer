@@ -1,14 +1,14 @@
-use crate::utils::{any_as_u8_slice};
 use std::sync::{Arc, RwLock};
-use hal::adapter::MemoryType;
+use crate::utils::{any_as_u8_slice};
+use crate::renderer::core::RendererCore;
 use hal::device::Device;
 
 pub(crate) struct Buffer<B: hal::Backend> {
-    buffer: Option<B::Buffer>,
-    buffer_memory: Option<B::Memory>,
-    memory_is_mapped: bool,
-    size: u64,
-    padded_stride: u64,
+    pub buffer: Option<B::Buffer>,
+    pub buffer_memory: Option<B::Memory>,
+    pub memory_is_mapped: bool,
+    pub size: u64,
+    pub padded_stride: u64,
 }
 
 impl<B: hal::Backend> Buffer<B> {
@@ -30,7 +30,7 @@ impl<B: hal::Backend> Buffer<B> {
         self.buffer.as_ref().unwrap()
     }
 
-    pub fn update_data<T>(&mut self, core: &Arc<RwLock<B>>, offset: u64, data_source: &[T])
+    pub fn update_data<T>(&mut self, core: &Arc<RwLock<RendererCore<B>>>, offset: u64, data_source: &[T])
         where T: Copy,
               T: std::fmt::Debug
     {
@@ -60,6 +60,15 @@ impl<B: hal::Backend> Buffer<B> {
 pub(crate) struct Uniform<B: hal::Backend> {
     pub buffer: Option<Buffer<B>>,
     pub desc: Option<DescSet<B>>,
+}
+
+impl <B: hal::Backend> Uniform<B> {
+    pub fn new(buffer: Option<Buffer<B>>, desc: Option<DescSet<B>>) -> Self {
+        Self {
+            buffer,
+            desc,
+        }
+    }
 }
 
 pub(crate) struct Image<B: hal::Backend> {
@@ -140,7 +149,7 @@ pub(crate) struct DescSet<B: hal::Backend> {
 // ]
 
 impl<B: hal::Backend> DescSet<B> {
-    fn write<'a, 'b: 'a, WI>(&'b self, device: &mut B::Device, writes: Vec<DescSetWrite<WI>>)
+    pub(crate) fn write<'a, 'b: 'a, WI>(&'b self, device: &mut B::Device, writes: Vec<DescSetWrite<WI>>)
         where
             WI: std::borrow::Borrow<hal::pso::Descriptor<'a, B>>
     {

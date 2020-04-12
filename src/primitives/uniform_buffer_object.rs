@@ -1,4 +1,4 @@
-use cgmath::Matrix4;
+use cgmath::{Matrix4, SquareMatrix};
 
 #[derive(Clone, Copy, Debug)]
 pub struct CameraUniformBufferObject {
