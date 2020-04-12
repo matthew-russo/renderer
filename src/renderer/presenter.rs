@@ -1,11 +1,9 @@
 use std::sync::{Arc, RwLock};
 use hal::window::{Extent2D};
-use hal::pso::Viewport;
 use hal::device::Device;
 use hal::window::Surface;
 use crate::renderer::core::RendererCore;
-use crate::renderer::drawer::{Drawer, GfxDrawer};
-use crate::renderer::allocator::Allocator;
+use crate::renderer::allocator::{Allocator, GfxAllocator};
 use ash::vk;
 use std::path::Path;
 use std::ffi::c_void;
@@ -16,11 +14,10 @@ const VK_FORMAT_R8G8B8A8_SRGB: u32 = 43;
 type ImageIndex = u32;
 
 pub(crate) trait Presenter<B: hal::Backend> {
-    fn acquire_image(&mut self, acquire_semaphore: B::Semaphore) -> Result<ImageIndex, String>;
+    fn acquire_image(&mut self) -> Result<u32, String>;
     fn present(&mut self) -> Result<(), String>;
-    fn viewport(&self) -> Viewport;
+    fn viewport(&self) -> hal::pso::Viewport;
 }
-
 
 pub struct VulkanXrSessionCreateInfo {
     pub instance: vk::Instance,
@@ -185,34 +182,47 @@ impl VulkanXrSession {
     }
 }
 
-pub(crate) struct XrPresenter<B: hal::Backend, A: Allocator<B>, D: Drawer<B>> {
+pub(crate) struct XrPresenter<B: hal::Backend, A: Allocator<B>> {
     core: Arc<RwLock<RendererCore<B>>>,
     allocator: A,
-    drawer: D,
     // TODO -> parameterize over graphics api
     vulkan_xr_session: VulkanXrSession,
     rendering_state: Option<openxr::FrameState>,
     acquired_image: Option<u32>,
+    viewport: hal::pso::Viewport,
 }
 
-impl <B: hal::Backend, A: Allocator<B>, D: Drawer<B>> XrPresenter<B, A, D> {
-    fn new(core: &Arc<RwLock<RendererCore<B>>>, allocator: A) -> Self {
-        let vulkan_xr_session = OpenXr::init().create_vulkan_session();
-        let drawer = GfxDrawer::new(core, allocator, viewport);
+impl <B: hal::Backend> XrPresenter<B, GfxAllocator<B>> {
+    fn new(core: &Arc<RwLock<RendererCore<B>>>, allocator: GfxAllocator<B>) -> Self {
+        let mut vulkan_xr_session = OpenXr::init().create_vulkan_session().unwrap();
+        vulkan_xr_session.create_swapchain();
+        let viewport = Self::create_viewport(&vulkan_xr_session);
 
         Self {
             core: Arc::clone(core),
             allocator,
-            drawer,
             vulkan_xr_session,
             rendering_state: None,
             acquired_image: None,
+            viewport,
+        }
+    }
+
+    fn create_viewport(vulkan_xr_session: &VulkanXrSession) -> hal::pso::Viewport {
+        hal::pso::Viewport {
+            rect: hal::pso::Rect {
+                x: 0,
+                y: 0,
+                w: vulkan_xr_session.resolution.unwrap().width as _,
+                h: vulkan_xr_session.resolution.unwrap().height as _,
+            },
+            depth: 0.0..1.0,
         }
     }
 }
 
-impl <B: hal::Backend, A: Allocator<B>, D: Drawer<B>> Presenter<B> for XrPresenter<B, A, D> {
-    fn acquire_image(&mut self, acquire_semaphore: <B as Backend>::Semaphore) -> Result<u32, String> {
+impl <B: hal::Backend> Presenter<B> for XrPresenter<B, GfxAllocator<B>> {
+    fn acquire_image(&mut self) -> Result<u32, String> {
         self.rendering_state = Some(self
             .vulkan_xr_session
             .frame_waiter
@@ -294,29 +304,26 @@ impl <B: hal::Backend, A: Allocator<B>, D: Drawer<B>> Presenter<B> for XrPresent
             .map_err(|e| e.to_string())
     }
 
-    fn viewport(&self) -> Viewport {
-        unimplemented!()
+    fn viewport(&self) -> hal::pso::Viewport {
+        self.viewport.clone()
     }
 }
 
-pub(crate) struct MonitorPresenter<B: hal::Backend, A: Allocator<B>, D: Drawer<B>> {
+pub(crate) struct MonitorPresenter<B: hal::Backend, A: Allocator<B>> {
     core: Arc<RwLock<RendererCore<B>>>,
     allocator: A,
-    drawer: D,
     swapchain: SxeSwapchain<B>,
     acquired_image: Option<ImageIndex>,
-    viewport: Viewport,
+    viewport: hal::pso::Viewport,
 }
 
-impl <B: hal::Backend, A: Allocator<B>, D: Drawer<B>> MonitorPresenter<B, A, D> {
-    pub fn new(core: &Arc<RwLock<RendererCore<B>>>, allocator: A) -> Self {
+impl <B: hal::Backend> MonitorPresenter<B, GfxAllocator<B>> {
+    pub fn new(core: &Arc<RwLock<RendererCore<B>>>, allocator: GfxAllocator<B>) -> Self {
         let swapchain = SxeSwapchain::new(core);
         let viewport = Self::create_viewport(&swapchain);
-        let drawer: D = GfxDrawer::new(core, allocator, viewport);
         Self {
             core: Arc::clone(core),
             allocator,
-            drawer,
             swapchain,
             acquired_image: None,
             viewport,
@@ -336,15 +343,15 @@ impl <B: hal::Backend, A: Allocator<B>, D: Drawer<B>> MonitorPresenter<B, A, D> 
     }
 }
 
-impl <B: hal::Backend, A: Allocator<B>, D: Drawer<B>> Presenter<B> for MonitorPresenter<B, A, D> {
-    fn acquire_image(&mut self, acquire_semaphore: B::Semaphore) -> Result<u32, String> {
+impl <B: hal::Backend> Presenter<B> for MonitorPresenter<B, GfxAllocator<B>> {
+    fn acquire_image(&mut self) -> Result<u32, String> {
         use hal::window::Swapchain;
 
         if let Some(image_index) = self.acquired_image {
             return Err(format!("image {} already acquired without presenting", image_index));
         }
 
-        let (image_index, maybe_suboptimal) = unsafe {
+        let (image_index, _maybe_suboptimal) = unsafe {
             self
                 .swapchain
                 .swapchain
@@ -358,7 +365,7 @@ impl <B: hal::Backend, A: Allocator<B>, D: Drawer<B>> Presenter<B> for MonitorPr
         Ok(image_index)
     }
 
-    fn present(&mut self, image_present_semaphore: &B::Semaphore) -> Result<(), String> {
+    fn present(&mut self) -> Result<(), String> {
         use hal::window::Swapchain;
 
         unsafe {
@@ -367,7 +374,7 @@ impl <B: hal::Backend, A: Allocator<B>, D: Drawer<B>> Presenter<B> for MonitorPr
                 .take()
                 .ok_or(String::from("no image acquired to present to"))?;
 
-            let mut queue = self
+            let queue = &mut self
                 .core
                 .read()
                 .unwrap()
@@ -379,7 +386,7 @@ impl <B: hal::Backend, A: Allocator<B>, D: Drawer<B>> Presenter<B> for MonitorPr
                 .swapchain
                 .unwrap()
                 .present(
-                    &mut queue,
+                    queue,
                     image_index,
                     Some(&*image_present_semaphore)
                 )
@@ -388,7 +395,7 @@ impl <B: hal::Backend, A: Allocator<B>, D: Drawer<B>> Presenter<B> for MonitorPr
         }
     }
 
-    fn viewport(&self) -> Viewport {
+    fn viewport(&self) -> hal::pso::Viewport {
         self.viewport.clone()
     }
 }

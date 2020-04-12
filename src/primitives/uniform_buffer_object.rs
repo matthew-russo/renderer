@@ -1,5 +1,7 @@
 use cgmath::{Matrix4, SquareMatrix};
 
+use crate::renderer::presenter::DIMS;
+
 #[derive(Clone, Copy, Debug)]
 pub struct CameraUniformBufferObject {
     pub view: Matrix4<f32>,
@@ -28,11 +30,11 @@ impl std::default::Default for CameraUniformBufferObject {
             0.1,
             1000.0
         );
-        my_temp_proj.y.y *= -1.0;
+        proj.y.y *= -1.0;
 
         CameraUniformBufferObject::new(
-            my_temp_view,
-            my_temp_proj
+            view,
+            proj
         )
     }
 }

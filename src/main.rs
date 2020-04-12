@@ -57,7 +57,6 @@ mod renderer;
 mod components;
 mod timing;
 mod systems;
-mod xr;
 mod utils;
 
 use std::sync::{
@@ -77,7 +76,6 @@ use crate::components::camera::Camera;
 use crate::components::config::Config;
 use crate::primitives::three_d::cube::Cube;
 use crate::primitives::drawable::Drawable;
-use crate::primitives::uniform_buffer_object::ObjectUniformBufferObject;
 use crate::timing::Time;
 use crate::systems::rotation::Rotation;
 use crate::events::event_handler::EventHandler;
@@ -91,6 +89,7 @@ use crate::renderer::core::RendererCore;
 use crate::renderer::allocator::{Allocator, GfxAllocator};
 use crate::renderer::drawer::{Drawer, GfxDrawer};
 use crate::renderer::presenter::{Presenter, MonitorPresenter, XrPresenter};
+use crate::primitives::uniform_buffer_object::ObjectUniformBufferObject;
 
 fn main() {
     env_logger::init();
@@ -110,12 +109,9 @@ fn main() {
     #[cfg(not(feature = "xr"))]
     let presenter = MonitorPresenter::new(&renderer_core, allocator);
 
-    let event_handler = Arc::new(RwLock::new(EventHandler::new()));
+    let drawer = GfxDrawer::new(&renderer_core, allocator, presenter.viewport());
 
-    // let xr = Xr::init();
-    // let vulkan_xr_session = unsafe {
-    //     xr.create_vulkan_session(renderer.vulkan_session_create_info())
-    // }.unwrap();
+    let event_handler = Arc::new(RwLock::new(EventHandler::new()));
 
     start_engine(drawer, presenter, &event_handler);
 
@@ -151,106 +147,31 @@ fn start_engine<B: hal::Backend, D: Drawer<B>, P: Presenter<B>>(mut drawer: D, m
             (),
             vec![(Transform::new(), Camera { displaying: true })],
         );
-
-        let mut objects = Vec::new();
-        let mut rng = rand::thread_rng();
-        for _i in 0..64 {
-            let (mut transform, mesh) = Cube::new();
-            let x = rng.gen_range(-15.0, 15.0);
-            let y = rng.gen_range(-15.0, 15.0);
-            let z = rng.gen_range(-15.0, 15.0);
-            transform.translate(Vector3::new(x, y, z));
-
-            let i: u32 = rng.gen_range(0, 3);
-
-            let texture = Texture {
-                path: match i {
-                    0 => "textures/container.jpg".into(),
-                    1 => "textures/demo.jpg".into(),
-                    2 => "textures/wall.jpg".into(),
-                    _ => unreachable!()
-                }
-            };
-
-            objects.push((transform, mesh, texture));
-        }
-
         world.insert_from(
             (),
-            objects,
+            generate_n_objs(64),
         );
-
         world.insert_from(
             (),
             vec![(Config::new() ,)],
         );
 
-        {
-            let drawables = <(Read<Transform>, Read<Mesh>)>::query()
-                .iter_entities(&world)
-                .map(|(entity, (transform, mesh))| {
-                    let mut drawable = Drawable::new(mesh.clone(), transform.clone());
-
-                    if let Some(color) = world.entity_data::<Color>(entity) {
-                        drawable.with_color(color.clone());
-                    }
-
-                    if let Some(texture) = world.entity_data::<Texture>(entity) {
-                        drawable.with_texture(texture.clone());
-                    }
-
-                    drawable
-                })
-                .collect();
-
-            unsafe {
-                drawer.update_drawables(drawables);
-            }
+        unsafe {
+            drawer.update_drawables(fetch_drawables(&world));
         }
 
-        let mut frame_count = 0;
         loop {
-            frame_count += 1;
             event_handler.write().unwrap().handle_events(&world);
+
+            // TODO -> run all systems
             rotation_system.run(&world);
 
             // update frame timing
             time.write().unwrap().tick();
 
-            let uniform_data: Vec<ObjectUniformBufferObject> = <(Read<Transform>, Read<Mesh>)>::query()
-                .iter(&mut world)
-                .map(|(transform, _mesh)| {
-                    transform.clone().to_ubo()
-                })
-                .collect();
-
-            let camera_transform = <(Read<Transform>, Read<Camera>)>::query()
-                .iter(&mut world)
-                .map(|(transform, _cam)| transform.clone())
-                .next()
-                .unwrap();
-
-
             let mut need_to_update_config = false;
             if <Read<Config>>::query().iter(&mut world).next().unwrap().should_record_commands {
-                let drawables = <(Read<Transform>, Read<Mesh>)>::query()
-                    .iter_entities(&world)
-                    .map(|(entity, (transform, mesh))| {
-                        let mut drawable = Drawable::new(mesh.clone(), transform.clone());
-
-                        if let Some(color) = world.entity_data::<Color>(entity) {
-                            drawable.with_color(color.clone());
-                        }
-
-                        if let Some(texture) = world.entity_data::<Texture>(entity) {
-                            drawable.with_texture(texture.clone());
-                        }
-
-                        drawable
-                    })
-                    .collect();
-
-                unsafe { drawer.update_drawables(drawables) };
+                unsafe { drawer.update_drawables(fetch_drawables(&world)) };
                 need_to_update_config = true;
             }
 
@@ -264,11 +185,76 @@ fn start_engine<B: hal::Backend, D: Drawer<B>, P: Presenter<B>>(mut drawer: D, m
             }
 
             unsafe {
-                drawer.map_uniform_data(uniform_data);
-                let image_index = presenter.acquire_image().unwrap();
+                drawer.update_uniforms(fetch_uniforms(&world))?;
+                drawer.update_camera(fetch_camera_transform(&world));
+                let image_index = presenter.acquire_image()?;
                 drawer.draw(image_index as usize);
                 presenter.present();
             }
         }
     });
+}
+
+fn generate_n_objs(n: u32) -> Vec<(Transform, Mesh, Texture)> {
+    let mut objects = Vec::new();
+    let mut rng = rand::thread_rng();
+
+    for _i in 0..n {
+        let (mut transform, mesh) = Cube::new();
+        let x = rng.gen_range(-15.0, 15.0);
+        let y = rng.gen_range(-15.0, 15.0);
+        let z = rng.gen_range(-15.0, 15.0);
+        transform.translate(Vector3::new(x, y, z));
+
+        let i: u32 = rng.gen_range(0, 3);
+
+        let texture = Texture {
+            path: match i {
+                0 => "textures/container.jpg".into(),
+                1 => "textures/demo.jpg".into(),
+                2 => "textures/wall.jpg".into(),
+                _ => unreachable!()
+            }
+        };
+
+        objects.push((transform, mesh, texture));
+    }
+
+    objects
+}
+
+fn fetch_camera_transform(world: &legion::World) -> Transform {
+    <(Read<Transform>, Read<Camera>)>::query()
+        .iter(&world)
+        .map(|(transform, _cam)| transform.clone())
+        .next()
+        .unwrap()
+}
+
+fn fetch_uniforms(world: &legion::World) -> Vec<ObjectUniformBufferObject> {
+    <(Read<Transform>, Read<Mesh>)>::query()
+        .iter(world)
+        .map(|(transform, _mesh)| {
+            transform.clone().to_ubo()
+        })
+        .collect()
+}
+
+fn fetch_drawables(world: &legion::World) -> Vec<Drawable> {
+    <(Read<Transform>, Read<Mesh>)>::query()
+        .iter_entities(world)
+        .map(|(entity, (transform, mesh))| {
+            let mut drawable = Drawable::new(mesh.clone(), transform.clone());
+
+            if let Some(color) = world.entity_data::<Color>(entity) {
+                drawable.with_color(color.clone());
+            }
+
+            if let Some(texture) = world.entity_data::<Texture>(entity) {
+                drawable.with_texture(texture.clone());
+            }
+
+            drawable
+        })
+        .collect()
 }

@@ -7,13 +7,13 @@ pub(crate) struct RendererCore<B: hal::Backend> {
     pub device: GfxDevice<B>,
 }
 
-impl<B: hal::Backend> RendererCore<B> {
+impl RendererCore<back::Backend> {
     pub unsafe fn new(size: winit::dpi::LogicalSize<f64>, event_loop: &winit::event_loop::EventLoop<()>) -> Self {
         let window_builder = winit::window::WindowBuilder::new()
             .with_title("sxe")
             .with_inner_size(size);
-        let (backend, _instance): (GfxBackend<B>, back::Instance) = create_backend(window_builder, event_loop);
-        let device: GfxDevice<B> = GfxDevice::new(
+        let (backend, _instance) = create_backend(window_builder, event_loop);
+        let device = GfxDevice::new(
             backend.adapter.adapter.take().unwrap(),
             &backend.surface
         );
@@ -117,7 +117,7 @@ impl <B: hal::Backend> GfxBackend<B> {
 }
 
 #[cfg(not(any(feature="gl", feature="dx12", feature="vulkan", feature="metal")))]
-fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (GfxBackend<back::Backend>, ()) {
+fn create_backend<B: hal::Backend>(window_builder: winit::window::WindowBuilder, event_loop: &winit::event_loop::EventLoop<()>) -> (GfxBackend<back::Backend>, ()) {
     panic!("You must specify one of the valid backends using --features=<backend>, with \"gl\", \"dx12\", \"vulkan\", and \"metal\" being valid backends.");
 }
 

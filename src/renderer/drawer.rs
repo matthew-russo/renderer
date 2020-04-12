@@ -4,13 +4,14 @@ use std::collections::{HashMap, BTreeMap};
 use crate::components::{mesh::Mesh, texture::Texture, transform::Transform};
 use crate::primitives::{drawable::Drawable, vertex::Vertex};
 use crate::primitives::uniform_buffer_object::{CameraUniformBufferObject, ObjectUniformBufferObject};
-use crate::renderer::allocator::{COLOR_RANGE, Allocator};
-use crate::renderer::types::{Image, Uniform, Buffer, DescSet, DescSetLayout};
+use crate::renderer::allocator::{COLOR_RANGE, Allocator, GfxAllocator};
+use crate::renderer::types::{Image, Uniform, Buffer, DescSetLayout};
 use crate::renderer::render_key::RenderKey;
 use crate::renderer::core::RendererCore;
 use crate::utils::data_path;
 
 use cgmath::{Vector3, Matrix4};
+use cgmath::Angle;
 
 use itertools::Itertools;
 
@@ -20,9 +21,11 @@ use hal::pso::Viewport;
 use hal::device::Device;
 use hal::queue::CommandQueue;
 
-
 pub(crate) trait Drawer<B: hal::Backend> {
     fn draw(&mut self, image_index: usize) -> &B::Semaphore;
+    fn update_drawables(&mut self, drawables: Vec<Drawable>) -> Result<(), String>;
+    fn update_uniforms(&mut self, uniforms: Vec<ObjectUniformBufferObject>) -> Result<(), String>;
+    fn update_camera(&mut self, transform: Transform) -> Result<(), String>;
 }
 
 pub(crate) struct GfxDrawer<B: hal::Backend, A: Allocator<B>> {
@@ -46,8 +49,8 @@ pub(crate) struct GfxDrawer<B: hal::Backend, A: Allocator<B>> {
     last_drawables: Option<Vec<Drawable>>,
 }
 
-impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
-    pub fn new(core: &Arc<RwLock<RendererCore<B>>>, mut allocator: A, viewport: Viewport) -> Self {
+impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
+    pub fn new(core: &Arc<RwLock<RendererCore<B>>>, mut allocator: GfxAllocator<B>, viewport: Viewport) -> Self {
         let render_pass = RenderPass::new(
             core,
             swapchain_format,
@@ -56,7 +59,11 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
         let framebuffers = unsafe {
             Framebuffers::new(
                 &core,
-                hal::image::Extent { width: viewport.rect.w, height: viewport.rect.h, depth: viewport.depth, },
+                hal::image::Extent {
+                    width: viewport.rect.w as u32,
+                    height: viewport.rect.h as u32,
+                    depth: viewport.depth.end as u32,
+                },
                 images,
                 image_format,
                 &render_pass,
@@ -107,7 +114,7 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
                     }
                 },
                 count: 1,
-                stage_flags: ShaderStageFlags::FRAGMENT,
+                stage_flags: hal::pso::ShaderStageFlags::FRAGMENT,
                 immutable_samplers: false
             }]);
 
@@ -116,9 +123,9 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
                 core,
                 render_pass.render_pass.as_ref().unwrap(),
                 vec![
-                    camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
-                    object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
-                    image_desc_set_layout
+                    camera_uniform.desc.as_ref().unwrap().desc_set_layout.layout.as_ref().unwrap(),
+                    object_uniform.desc.as_ref().unwrap().desc_set_layout.layout.as_ref().unwrap(),
+                    image_desc_set_layout.layout.as_ref().unwrap()
                 ],
                 "shaders/standard.vert",
                 "shaders/standard.frag",
@@ -143,19 +150,13 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
     }
 
     // TODO -> is there a way to streamline uniform allocation so that it encapsulates DescSetLayouts and DescSets?
-    fn init_uniform<T>(allocator: &mut A, bindings: &[hal::pso::DescriptorSetLayoutBinding], data: &[T]) -> Uniform<B> {
+    fn init_uniform<T>(allocator: &mut GfxAllocator<B>, bindings: &[hal::pso::DescriptorSetLayoutBinding], data: &[T])-> Uniform<B>
+        where T: Copy,
+              T: std::fmt::Debug
+    {
         let desc_set_layout = allocator.alloc_desc_set_layout(bindings);
         let desc_set = allocator.alloc_desc_set(&desc_set_layout);
         allocator.alloc_uniform(data, desc_set, 0)
-    }
-
-    fn init_image_desc_set() {
-        //      let image_desc_set_layout = Arc::new(RwLock::new(DescSetLayout::new(
-        //          &device_state,
-        //
-        //      )));
-
-        //      let image_desc_set = Self::create_set(&image_desc_set_layout, &mut image_desc_pool);
     }
 
     unsafe fn generate_vertex_and_index_buffers(&mut self, meshes: Vec<&Mesh>) {
@@ -199,50 +200,6 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
         self.index_buffer = Some(index_buffer);
     }
 
-    pub unsafe fn update_drawables(&mut self, mut drawables: Vec<Drawable>) {
-        let ubos = drawables
-            .iter()
-            .map(|d| d.transform.to_ubo())
-            .collect::<Vec<ObjectUniformBufferObject>>();
-        println!("UBOs: {:?}", ubos);
-        self.map_uniform_data(ubos);
-
-        self.generate_images(
-            drawables
-                .iter()
-                .filter(|d| d.texture.is_some())
-                .map(|d| d.texture.as_ref().unwrap())
-                .collect());
-
-        self.generate_vertex_and_index_buffers(
-            drawables
-                .iter_mut()
-                .map(|d| &d.mesh)
-                .collect::<Vec<&Mesh>>()
-        );
-
-        let meshes_by_texture = drawables
-            .iter()
-            .fold(BTreeMap::<Option<Texture>, Vec<&Mesh>>::new(), |mut map, drawable| {
-                let meshes_by_texture = map.entry(drawable.texture.clone()).or_insert(Vec::new());
-                meshes_by_texture.push(&drawable.mesh);
-                map
-            });
-
-        println!("meshes by texture: {:?}", meshes_by_texture.iter().map(|(tex, meshes)| (tex.clone(), meshes.iter().map(|m| m.key.clone()).collect::<Vec<String>>())).collect::<Vec<(Option<Texture>, Vec<String>)>>());
-
-        self.generate_cmd_buffers(meshes_by_texture);
-        self.last_drawables = Some(drawables);
-    }
-
-    pub unsafe fn map_uniform_data(&mut self, ubos: Vec<ObjectUniformBufferObject>) {
-        self
-            .object_uniform
-            .buffer
-            .as_mut()
-            .unwrap()
-            .update_data(&self.core, 0, &ubos);
-    }
 
     unsafe fn generate_images(&mut self, textures: Vec<&Texture>) {
         let new_textures: Vec<&Texture> = textures
@@ -380,9 +337,22 @@ impl <B: hal::Backend, A: Allocator<B>> GfxDrawer<B, A> {
     }
 }
 
-pub fn fps_view_matrix(eye: Vector3<f32>, pitch_rad: cgmath::Rad<f32>, yaw_rad: cgmath::Rad<f32>) -> Matrix4<f32> {
-    use cgmath::Angle;
+impl <B: hal::Backend, A: Allocator<B>> Drop for GfxDrawer<B, A> {
+    fn drop(&mut self) {
+        let readable_core = self.core.read().unwrap();
+        let raw_device = &mut readable_core.device.device;
+        self.image_desc_set_layout.drop(raw_device);
+        self.vertex_buffer.take().unwrap().drop(raw_device);
+        self.index_buffer.take().unwrap().drop(raw_device);
+        self.camera_uniform.drop(raw_device);
+        self.object_uniform.drop(raw_device);
+        for image in self.images.values_mut() {
+            image.drop(raw_device);
+        }
+    }
+}
 
+pub fn fps_view_matrix(eye: Vector3<f32>, pitch_rad: cgmath::Rad<f32>, yaw_rad: cgmath::Rad<f32>) -> Matrix4<f32> {
     let cos_pitch = pitch_rad.cos();
     let sin_pitch = pitch_rad.sin();
 
@@ -403,11 +373,9 @@ pub fn fps_view_matrix(eye: Vector3<f32>, pitch_rad: cgmath::Rad<f32>, yaw_rad: 
     view_matrix
 }
 
-impl <B: hal::Backend, A: Allocator<B>> Drawer<B> for GfxDrawer<B, A> {
+impl <B: hal::Backend> Drawer<B> for GfxDrawer<B, GfxAllocator<B>> {
     fn draw(&mut self, image_index: usize) -> &B::Semaphore {
         unsafe {
-            let new_ubo = self.update_camera_uniform_buffer_object(dims, camera_transform);
-            self.camera_uniform.buffer.as_mut().unwrap().update_data(&self.core, 0, &[new_ubo]);
 
             // TODO: THIS SHOULD BE REFACTORED
             let sem_index = self.framebuffers.next_acq_pre_pair_index();
@@ -450,6 +418,69 @@ impl <B: hal::Backend, A: Allocator<B>> Drawer<B> for GfxDrawer<B, A> {
 
             image_acquired_semaphore
         }
+    }
+
+    fn update_drawables(&mut self, drawables: Vec<Drawable>) -> Result<(), String> {
+        unsafe {
+            let uniforms = drawables
+                .iter()
+                .map(|d| d.transform.to_ubo())
+                .collect::<Vec<ObjectUniformBufferObject>>();
+
+            self.update_uniforms(uniforms);
+
+            self.generate_images(
+                drawables
+                    .iter()
+                    .filter(|d| d.texture.is_some())
+                    .map(|d| d.texture.as_ref().unwrap())
+                    .collect());
+
+            self.generate_vertex_and_index_buffers(
+                drawables
+                    .iter_mut()
+                    .map(|d| &d.mesh)
+                    .collect::<Vec<&Mesh>>()
+            );
+
+            let meshes_by_texture = drawables
+                .iter()
+                .fold(BTreeMap::<Option<Texture>, Vec<&Mesh>>::new(), |mut map, drawable| {
+                    let meshes_by_texture = map.entry(drawable.texture.clone()).or_insert(Vec::new());
+                    meshes_by_texture.push(&drawable.mesh);
+                    map
+                });
+
+            self.generate_cmd_buffers(meshes_by_texture);
+            self.last_drawables = Some(drawables);
+
+            Ok(())
+        }
+    }
+
+    fn update_uniforms(&mut self, uniforms: Vec<ObjectUniformBufferObject>) -> Result<(), String> {
+        unsafe {
+            self
+                .object_uniform
+                .buffer
+                .as_mut()
+                .unwrap()
+                .update_data(&self.core, 0, &uniforms);
+        }
+
+        Ok(())
+    }
+
+    fn update_camera(&mut self, transform: Transform) -> Result<(), String> {
+        let new_ubo = self.update_camera_uniform_buffer_object(self.dims, transform);
+        self
+            .camera_uniform
+            .buffer
+            .as_mut()
+            .unwrap()
+            .update_data(&self.core, 0, &[new_ubo]);
+
+        Ok(())
     }
 }
 

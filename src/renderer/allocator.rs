@@ -17,11 +17,15 @@ pub const COLOR_RANGE: hal::image::SubresourceRange = hal::image::SubresourceRan
 };
 
 pub(crate) trait Allocator<B: hal::Backend> {
-    fn alloc_buffer<T>(&mut self, data: &[T], alignment: u64, min_size: u64, usage: hal::buffer::Usage) -> Buffer<B>;
-    fn alloc_uniform<T>(&mut self, data: &[T], desc: DescSet<B>, binding: u32) -> Uniform<B>;
+    fn alloc_buffer<T>(&mut self, data: &[T], alignment: u64, min_size: u64, usage: hal::buffer::Usage) -> Buffer<B>
+        where T: Copy,
+              T: std::fmt::Debug;
+    fn alloc_uniform<T>(&mut self, data: &[T], desc: DescSet<B>, binding: u32) -> Uniform<B>
+        where T: Copy,
+              T: std::fmt::Debug;
     fn alloc_image(&mut self, usage: hal::buffer::Usage, img_path: &String, sampler_desc: &hal::image::SamplerDesc) -> Image<B>;
     fn alloc_desc_set_layout(&mut self, bindings: &[hal::pso::DescriptorSetLayoutBinding]) -> DescSetLayout<B>;
-    fn alloc_desc_set(&mut self, desc_set_layout: &DescSetLayout<B>) -> DescSet<B>;
+    fn alloc_desc_set(&mut self, desc_set_layout: DescSetLayout<B>) -> DescSet<B>;
 }
 
 pub(crate) struct GfxAllocator<B: hal::Backend> {
@@ -95,7 +99,12 @@ impl <B: hal::Backend> GfxAllocator<B> {
         }
     }
 
-    fn transfer_image(&self, command_pool: &mut B::CommandPool, image: &B::Image, image_upload_buffer: &B::Buffer, image_data: ImageData) {
+    fn transfer_image(&self,
+                      command_pool: &mut B::CommandPool,
+                      image: &B::Image,
+                      image_upload_buffer: &B::Buffer,
+                      image_data: ImageData,
+                      image_transferred_fence: &B::Fence) {
         unsafe {
             let mut cmd_buffer = command_pool.allocate_one(hal::command::Level::Primary);
             cmd_buffer.begin_primary(hal::command::CommandBufferFlags::ONE_TIME_SUBMIT);
@@ -137,7 +146,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
 
             let image_barrier = hal::memory::Barrier::Image {
                 states: (hal::image::Access::TRANSFER_WRITE, hal::image::Layout::TransferDstOptimal)..(hal::image::Access::SHADER_READ, hal::image::Layout::ShaderReadOnlyOptimal),
-                target: &image,
+                target: image,
                 families: None,
                 range: COLOR_RANGE.clone(),
             };
@@ -157,7 +166,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
                 .device
                 .queue_group
                 .queues[0]
-                .submit_without_semaphores(Some(&cmd_buffer), Some(&mut transferred_image_fence));
+                .submit_without_semaphores(Some(&cmd_buffer), Some(&mut image_transferred_fence));
         }
     }
 
@@ -167,7 +176,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
         func(raw_device)
     }
 
-    fn find_memory_type(&self, mem_reqs: hal::memory::Requirements, props: hal::memory::Properties) -> MemoryTypeId {
+    fn find_memory_type(&self, mem_reqs: hal::memory::Requirements, props: hal::memory::Properties) -> hal::MemoryTypeId {
         self
             .core
             .read()
@@ -205,6 +214,8 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
                     min_size: u64,
                     usage: hal::buffer::Usage)
         -> Buffer<B>
+        where T: Copy,
+              T: std::fmt::Debug
     {
         let stride = Self::calculate_stride::<T>(alignment);
         let mut upload_size = data.len() as u64 * stride;
@@ -252,10 +263,10 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
             Some(memory),
             false,
             mem_req.size,
-            padded_stride,
+            stride,
         );
 
-        buffer.update_data(&self.core, 0, data_source);
+        buffer.update_data(&self.core, 0, data);
 
         buffer
     }
@@ -392,7 +403,7 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
             .unwrap()
             .into();
 
-        self.run_with_device(|device| {
+        let image_memory = self.run_with_device(|device| {
             unsafe {
                 let image_memory = device
                     .allocate_memory(device_type, image_req.size)
@@ -401,7 +412,7 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
                     .bind_image_memory(&image_memory, 0, &mut image)
                     .unwrap();
 
-                let transferred_image_fence = device
+                let image_transferred_fence = device
                     .create_fence(false)
                     .expect("Can't create fence");
 
@@ -417,14 +428,15 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
                         hal::pool::CommandPoolCreateFlags::empty(),
                     )
                     .expect("Can't create staging command pool");
-                self.transfer_image(&mut staging_pool, &image, &image_upload_buffer, image_data);
-                device.destroy_command_pool(staging_pool);
 
-                device
-                    .wait_for_fence(&transferred_image_fence, !0)
-                    .unwrap();
+                self.transfer_image(&mut staging_pool, &image, &image_upload_buffer, image_data, &image_transferred_fence);
+
+                device.destroy_command_pool(staging_pool);
+                device.wait_for_fence(&image_transferred_fence, !0).unwrap();
                 device.destroy_buffer(image_upload_buffer);
                 device.free_memory(image_upload_memory);
+
+                image_memory
             }
         });
 
@@ -441,10 +453,12 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         });
 
         let sampler = self.run_with_device(|device| {
-            device.create_sampler(sampler_desc).expect("can't create sampler")
+            unsafe {
+                device.create_sampler(sampler_desc).expect("can't create sampler")
+            }
         });
 
-        desc_set.write(
+        image_desc_set.write(
             &mut self.core.read().unwrap().device.device,
             vec![
                 DescSetWrite {
@@ -460,16 +474,15 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         );
 
         Image::new(
-            desc_set,
+            image_desc_set,
             Some(sampler),
             Some(image),
             Some(image_view),
             Some(image_memory),
-            Some(transferred_image_fence),
         )
     }
 
-    fn alloc_desc_set_layout(&mut self, bindings: &[hal::pso::DescriptorSetLayoutBindings]) -> DescSetLayout<B> {
+    fn alloc_desc_set_layout(&mut self, bindings: &[hal::pso::DescriptorSetLayoutBinding]) -> DescSetLayout<B> {
         let layout = self.run_with_device(|device| {
             unsafe {
                 device
@@ -483,17 +496,17 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         }
     }
 
-    fn alloc_desc_set(&mut self, desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>) -> DescSet<B> {
+    fn alloc_desc_set(&mut self, desc_set_layout: DescSetLayout<B>) -> DescSet<B> {
         // TODO -> fix this
-        let descriptor_pool = self.uniform_desc_pool.as_ref().unwrap();
+        let descriptor_pool = self.uniform_desc_pool.as_mut().unwrap();
 
         let descriptor_set = unsafe {
-            descriptor_pool.allocate_set(desc_set_layout.read().unwrap().layout.as_ref().unwrap())
+            descriptor_pool.allocate_set(desc_set_layout.layout.as_ref().unwrap())
         }.unwrap();
 
         DescSet {
             descriptor_set,
-            desc_set_layout: desc_set_layout.clone()
+            desc_set_layout,
         }
     }
 }

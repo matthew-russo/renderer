@@ -26,6 +26,13 @@ impl<B: hal::Backend> Buffer<B> {
         }
     }
 
+    pub(crate) fn drop(&mut self, device: &mut B::Device, ) {
+        unsafe {
+            device.destroy_buffer(self.buffer.take().unwrap());
+            device.free_memory(self.buffer_memory.take().unwrap());
+        }
+    }
+
     pub fn get_buffer(&self) -> &B::Buffer {
         self.buffer.as_ref().unwrap()
     }
@@ -69,6 +76,11 @@ impl <B: hal::Backend> Uniform<B> {
             desc,
         }
     }
+
+    pub fn drop(&mut self, device: &mut B::Device) {
+        self.buffer.unwrap().drop(device);
+        self.desc.unwrap().drop(device);
+    }
 }
 
 pub(crate) struct Image<B: hal::Backend> {
@@ -77,7 +89,6 @@ pub(crate) struct Image<B: hal::Backend> {
     pub image: Option<B::Image>,
     pub image_view: Option<B::ImageView>,
     pub image_memory: Option<B::Memory>,
-    pub transferred_image_fence: Option<B::Fence>,
 }
 
 impl<B: hal::Backend> Image<B> {
@@ -85,8 +96,7 @@ impl<B: hal::Backend> Image<B> {
                sampler: Option<B::Sampler>,
                image: Option<B::Image>,
                image_view: Option<B::ImageView>,
-               image_memory: Option<B::Memory>,
-               transferred_image_fence: Option<B::Fence>)
+               image_memory: Option<B::Memory>)
         -> Self
     {
         Self {
@@ -95,17 +105,15 @@ impl<B: hal::Backend> Image<B> {
             image,
             image_view,
             image_memory,
-            transferred_image_fence,
         }
     }
 
-    pub fn wait_for_transfer_completion(&self) {
-        let readable_desc_set = self.desc_set.desc_set_layout.read().unwrap();
-        let device = &readable_desc_set.core.read().unwrap().device.device;
+    pub fn drop(&mut self, device: &mut B::Device) {
         unsafe {
-            device
-                .wait_for_fence(&self.transferred_image_fence.as_ref().unwrap(), !0)
-                .unwrap();
+            device.destroy_sampler(self.sampler.take().unwrap());
+            device.destroy_image_view(self.image_view.take().unwrap());
+            device.destroy_image(self.image.take().unwrap());
+            device.free_memory(self.image_memory.take().unwrap());
         }
     }
 }
@@ -127,11 +135,17 @@ impl<B: hal::Backend> DescSetLayout<B> {
             layout,
         }
     }
+
+    pub fn drop(&mut self, device: &mut B::Device) {
+        unsafe {
+            device.destroy_descriptor_set_layout(self.layout.take().unwrap());
+        }
+    }
 }
 
 pub(crate) struct DescSet<B: hal::Backend> {
     pub descriptor_set: B::DescriptorSet,
-    pub desc_set_layout: Arc<RwLock<DescSetLayout<B>>>,
+    pub desc_set_layout: DescSetLayout<B>,
 }
 // vec![
 //     hal::pso::DescriptorSetWrite {
@@ -166,42 +180,8 @@ impl<B: hal::Backend> DescSet<B> {
             device.write_descriptor_sets(descriptor_set_writes);
         }
     }
-}
 
-impl<B: hal::Backend> Drop for Image<B> {
-    fn drop(&mut self) {
-        unsafe {
-            let readable_desc_set_layout = self.desc_set.desc_set_layout.read().unwrap();
-            let device = &readable_desc_set_layout.core.read().unwrap().device.device;
-
-            let fence = self.transferred_image_fence.take().unwrap();
-            device.wait_for_fence(&fence, !0).unwrap();
-            device.destroy_fence(fence);
-
-            device.destroy_sampler(self.sampler.take().unwrap());
-            device.destroy_image_view(self.image_view.take().unwrap());
-            device.destroy_image(self.image.take().unwrap());
-            device.free_memory(self.image_memory.take().unwrap());
-        }
+    pub fn drop(&mut self, device: &mut B::Device) {
+         self.desc_set_layout.drop(device);
     }
 }
-
-impl<B: hal::Backend> Drop for Buffer<B> {
-    fn drop(&mut self) {
-        let device = &self.core.read().unwrap().device.device;
-        unsafe {
-            device.destroy_buffer(self.buffer.take().unwrap());
-            device.free_memory(self.buffer_memory.take().unwrap());
-        }
-    }
-}
-
-impl<B: hal::Backend> Drop for DescSetLayout<B> {
-    fn drop(&mut self) {
-        let device = &self.core.read().unwrap().device.device;
-        unsafe {
-            device.destroy_descriptor_set_layout(self.layout.take().unwrap());
-        }
-    }
-}
-
