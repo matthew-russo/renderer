@@ -2,6 +2,8 @@ use std::sync::{Arc, RwLock};
 use crate::utils::{any_as_u8_slice};
 use crate::renderer::core::RendererCore;
 use hal::device::Device;
+use std::fs::File;
+use std::io::BufReader;
 
 pub(crate) struct Buffer<B: hal::Backend> {
     pub buffer: Option<B::Buffer>,
@@ -51,7 +53,7 @@ impl<B: hal::Backend> Buffer<B> {
 
             let data_as_bytes = data_source
                 .iter()
-                .flat_map(|ubo| any_as_u8_slice(ubo, self.padded_stride as usize))
+                .flat_map(|d| any_as_u8_slice(d, self.padded_stride as usize))
                 .collect::<Vec<u8>>();
             std::ptr::copy_nonoverlapping(
                 data_as_bytes.as_ptr(),
@@ -84,24 +86,18 @@ impl <B: hal::Backend> Uniform<B> {
 }
 
 pub(crate) struct Image<B: hal::Backend> {
-    pub desc_set: DescSet<B>,
-    pub sampler: Option<B::Sampler>,
     pub image: Option<B::Image>,
     pub image_view: Option<B::ImageView>,
     pub image_memory: Option<B::Memory>,
 }
 
 impl<B: hal::Backend> Image<B> {
-    pub fn new(desc_set: DescSet<B>,
-               sampler: Option<B::Sampler>,
-               image: Option<B::Image>,
+    pub fn new(image: Option<B::Image>,
                image_view: Option<B::ImageView>,
                image_memory: Option<B::Memory>)
         -> Self
     {
         Self {
-            desc_set,
-            sampler,
             image,
             image_view,
             image_memory,
@@ -110,7 +106,6 @@ impl<B: hal::Backend> Image<B> {
 
     pub fn drop(&mut self, device: &mut B::Device) {
         unsafe {
-            device.destroy_sampler(self.sampler.take().unwrap());
             device.destroy_image_view(self.image_view.take().unwrap());
             device.destroy_image(self.image.take().unwrap());
             device.free_memory(self.image_memory.take().unwrap());
@@ -118,6 +113,72 @@ impl<B: hal::Backend> Image<B> {
     }
 }
 
+
+pub(crate) struct Texture<B: hal::Backend> {
+    pub desc_set: DescSet<B>,
+    pub sampler: Option<B::Sampler>,
+    pub image: Image<B>,
+}
+
+impl <B: hal::Backend> Texture<B> {
+    pub fn new(desc_set: DescSet<B>,
+               sampler: Option<B::Sampler>,
+               image: Image<B>)
+               -> Self
+    {
+        Self {
+            desc_set,
+            sampler,
+            image,
+        }
+    }
+
+    pub fn drop(&mut self, device: &mut B::Device) {
+        unsafe {
+            device.destroy_sampler(self.sampler.take().unwrap());
+            self.image.drop(device);
+        }
+    }
+}
+
+struct TextureData {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+    pub format: hal::format::Format,
+}
+
+impl TextureData {
+    fn load(img_path: &str, row_alignment_mask: u32) -> Self {
+        let img = image::load_image(img_reader, image::JPEG)
+            .unwrap()
+            .to_rgba();
+
+        let (width, height) = img.dimensions();
+
+        // TODO -> duplicated in ImageState::new
+        let image_stride = 4_usize;
+        let row_pitch = (width * image_stride as u32 + row_alignment_mask) & !row_alignment_mask;
+
+        let size = (width * height) as usize * image_stride;
+        let mut data: Vec<u8> = vec![0u8; size];
+
+        for y in 0..height as usize {
+            let row = &(*img)[y * (width as usize) * image_stride..(y + 1) * (width as usize) * image_stride];
+            let start = y * row_pitch as usize;
+            let count = width as usize * image_stride;
+            let range = start..(start + count);
+            data.splice(range, row.iter().map(|x| *x));
+        }
+
+        Self {
+            width,
+            height,
+            data,
+            format: hal::format::Format::Rgba8Srgb,
+        };
+    }
+}
 
 pub(crate) struct DescSetWrite<WI> {
     binding: hal::pso::DescriptorBinding,

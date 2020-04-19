@@ -8,14 +8,14 @@ use ash::vk;
 use std::path::Path;
 use std::ffi::c_void;
 
-const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
+pub const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 const VK_FORMAT_R8G8B8A8_SRGB: u32 = 43;
 
 type ImageIndex = u32;
 
 pub(crate) trait Presenter<B: hal::Backend> {
     fn acquire_image(&mut self) -> Result<u32, String>;
-    fn present(&mut self) -> Result<(), String>;
+    fn present(&mut self, present_semaphore: &B::Semaphore) -> Result<(), String>;
     fn viewport(&self) -> hal::pso::Viewport;
 }
 
@@ -253,7 +253,7 @@ impl <B: hal::Backend> Presenter<B> for XrPresenter<B, GfxAllocator<B>> {
         Ok(image)
     }
 
-    fn present(&mut self) -> Result<(), String> {
+    fn present(&mut self, present_semaphore: &B::Semaphore) -> Result<(), String> {
         let (view_flags, views) = self.vulkan_xr_session.session
             .locate_views(
                 openxr::ViewConfigurationType::PRIMARY_STEREO,
@@ -365,7 +365,7 @@ impl <B: hal::Backend> Presenter<B> for MonitorPresenter<B, GfxAllocator<B>> {
         Ok(image_index)
     }
 
-    fn present(&mut self) -> Result<(), String> {
+    fn present(&mut self, present_semaphore: &B::Semaphore) -> Result<(), String> {
         use hal::window::Swapchain;
 
         unsafe {
@@ -388,7 +388,7 @@ impl <B: hal::Backend> Presenter<B> for MonitorPresenter<B, GfxAllocator<B>> {
                 .present(
                     queue,
                     image_index,
-                    Some(&*image_present_semaphore)
+                    Some(&*present_semaphore)
                 )
                 .map(|v| ())
                 .map_err(|e| e.to_string())

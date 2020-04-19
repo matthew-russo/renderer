@@ -118,15 +118,7 @@ use hal::format::{Format, Swizzle, Aspects};
 
     //     self.render_pass_state = RenderPassState::new(&self.device_state, &self.swapchain_state);
 
-    //     let depth_image_stuff = create_image_stuff::<B>(
-    //         &self.device_state.read().unwrap().device,
-    //         &self.backend_state.adapter_state.memory_types,
-    //         self.swapchain_state.extent.width,
-    //         self.swapchain_state.extent.height,
-    //         hal::format::Format::D32SfloatS8Uint,
-    //         hal::image::Usage::DEPTH_STENCIL_ATTACHMENT,
-    //         hal::format::Aspects::DEPTH | Aspects::STENCIL
-    //     );
+
 
     //     self.framebuffer_state = FramebufferState::new(
     //         &self.device_state,

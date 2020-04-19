@@ -185,11 +185,11 @@ fn start_engine<B: hal::Backend, D: Drawer<B>, P: Presenter<B>>(mut drawer: D, m
             }
 
             unsafe {
-                drawer.update_uniforms(fetch_uniforms(&world))?;
-                drawer.update_camera(fetch_camera_transform(&world));
-                let image_index = presenter.acquire_image()?;
-                drawer.draw(image_index as usize);
-                presenter.present();
+                drawer.update_uniforms(fetch_uniforms(&world)).unwrap();
+                drawer.update_camera(fetch_camera_transform(&world)).unwrap();
+                let image_index = presenter.acquire_image().unwrap();
+                let present_semaphore = drawer.draw(image_index as usize);
+                presenter.present(present_semaphore);
             }
         }
     });
