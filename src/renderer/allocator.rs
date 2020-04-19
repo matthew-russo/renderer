@@ -1,9 +1,6 @@
-use crate::utils::{data_path};
 use crate::renderer::core::RendererCore;
-use crate::renderer::types::{Buffer, Uniform, Image, DescSetLayout, DescSet, DescSetWrite, Texture};
+use crate::renderer::types::{Buffer, Uniform, Image, DescSetLayout, DescSet, DescSetWrite, Texture, TextureData};
 use std::sync::{Arc, RwLock};
-use std::fs::File;
-use std::io::BufReader;
 use hal::device::Device;
 use hal::command::CommandBuffer;
 use hal::queue::CommandQueue;
@@ -24,9 +21,9 @@ pub(crate) trait Allocator<B: hal::Backend> {
         where T: Copy,
               T: std::fmt::Debug;
     fn alloc_image(&mut self, width: u32, height: u32, format: hal::format::Format, usage: hal::image::Usage, aspects: hal::format::Aspects) -> Image<B>;
-    fn alloc_texture(&mut self, usage: hal::buffer::Usage, img_path: &String, sampler_desc: &hal::image::SamplerDesc) -> Texture<B>;
+    fn alloc_texture(&mut self, usage: hal::buffer::Usage, img_path: &String, sampler_desc: &hal::image::SamplerDesc, image_desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>) -> Texture<B>;
     fn alloc_desc_set_layout(&mut self, bindings: &[hal::pso::DescriptorSetLayoutBinding]) -> DescSetLayout<B>;
-    fn alloc_desc_set(&mut self, desc_set_layout: DescSetLayout<B>) -> DescSet<B>;
+    fn alloc_desc_set(&mut self, desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>) -> DescSet<B>;
 }
 
 pub(crate) struct GfxAllocator<B: hal::Backend> {
@@ -133,15 +130,14 @@ impl <B: hal::Backend> GfxAllocator<B> {
 
                 self
                     .core
-                    .read()
+                    .write()
                     .unwrap()
                     .device
                     .queue_group
                     .queues[0]
                     .submit_without_semaphores(Some(&cmds), Some(&mut image_transferred_fence));
 
-                image_upload_buffer.drop(&mut device);
-                device.free_memory(image_upload_memory);
+                image_upload_buffer.drop(device);
                 device.destroy_command_pool(staging_pool);
                 device.wait_for_fence(&image_transferred_fence, !0).unwrap();
             }
@@ -163,7 +159,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
 
             let image_barrier = hal::memory::Barrier::Image {
                 states: (hal::image::Access::empty(), hal::image::Layout::Undefined)..(hal::image::Access::TRANSFER_WRITE, hal::image::Layout::TransferDstOptimal),
-                target: &image.image.unwrap(),
+                target: image.image.as_ref().unwrap(),
                 families: None,
                 range: COLOR_RANGE.clone(),
             };
@@ -175,8 +171,8 @@ impl <B: hal::Backend> GfxAllocator<B> {
             );
 
             cmd_buffer.copy_buffer_to_image(
-                &image_upload_buffer.buffer.unwrap(),
-                &image.image.unwrap(),
+                image_upload_buffer.buffer.as_ref().unwrap(),
+                image.image.as_ref().unwrap(),
                 hal::image::Layout::TransferDstOptimal,
                 &[hal::command::BufferImageCopy {
                     buffer_offset: 0,
@@ -198,7 +194,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
 
             let image_barrier = hal::memory::Barrier::Image {
                 states: (hal::image::Access::TRANSFER_WRITE, hal::image::Layout::TransferDstOptimal)..(hal::image::Access::SHADER_READ, hal::image::Layout::ShaderReadOnlyOptimal),
-                target: &image.image.unwrap(),
+                target: image.image.as_ref().unwrap(),
                 families: None,
                 range: COLOR_RANGE.clone(),
             };
@@ -215,9 +211,9 @@ impl <B: hal::Backend> GfxAllocator<B> {
         }
     }
 
-    fn run_with_device<T>(&self, func: impl Fn(&B::Device) -> T) -> T {
-        let readable_core = self.core.read().unwrap();
-        let raw_device = &readable_core.device.device;
+    fn run_with_device<T>(&self, mut func: impl FnMut(&mut B::Device) -> T) -> T {
+        let mut writable_core = self.core.write().unwrap();
+        let raw_device = &mut writable_core.device.device;
         func(raw_device)
     }
 
@@ -323,16 +319,17 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         where T: Copy,
               T: std::fmt::Debug
     {
+        let alignment = self.core.read().unwrap().backend.adapter.limits.min_uniform_buffer_offset_alignment;
         let buffer = Some(self.alloc_buffer(
             &data,
-            self.core.read().unwrap().backend.adapter.limits.min_uniform_buffer_offset_alignment,
+            alignment,
             65536,
             hal::buffer::Usage::UNIFORM,
             hal::memory::Properties::CPU_VISIBLE,
         ));
 
         desc.write(
-            &mut self.core.read().unwrap().device.device,
+            &mut self.core.write().unwrap().device.device,
             vec![DescSetWrite {
                 binding,
                 array_offset: 0,
@@ -350,12 +347,11 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
     }
 
     fn alloc_texture(&mut self,
-                   _usage: hal::buffer::Usage,
-                   img_path: &String,
-                   sampler_desc: &hal::image::SamplerDesc,) -> Texture<B> {
-        // TODO -> THIS IS BROKEN
+                     _usage: hal::buffer::Usage,
+                     img_path: &String,
+                     sampler_desc: &hal::image::SamplerDesc,
+                     image_desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>) -> Texture<B> {
         let image_desc_set = self.alloc_desc_set(image_desc_set_layout);
-        // TODO -> THIS IS BROKEN
 
         let row_alignment_mask = self.core.read().unwrap().backend.adapter.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
         let texture_data = TextureData::load(img_path, row_alignment_mask);
@@ -388,7 +384,7 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
                                 depth: 1,
                             },
                             hal::image::Extent {
-                                width: row_pitch / (image_stride as u32),
+                                width: row_pitch / (pixel_size as u32),
                                 height: texture_data.height,
                                 depth: 1,
                             });
@@ -400,13 +396,13 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         });
 
         image_desc_set.write(
-            &mut self.core.read().unwrap().device.device,
+            &mut self.core.write().unwrap().device.device,
             vec![
                 DescSetWrite {
                     binding: 0,
                     array_offset: 0,
                     descriptors: hal::pso::Descriptor::CombinedImageSampler(
-                        &image_view,
+                        image.image_view.as_ref().unwrap(),
                         hal::image::Layout::ShaderReadOnlyOptimal,
                         &sampler
                     )
@@ -469,7 +465,7 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
                         &mut image,
                         hal::image::ViewKind::D2,
                         format,
-                        swizzle::NO,
+                        hal::format::Swizzle::NO,
                         hal::image::SubresourceRange {
                             aspects,
                             levels: 0..1,
@@ -481,9 +477,9 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         });
 
         Image::new(
-            image: Some(image),
-            image_view: Some(image_view),
-            image_memory: Some(image_memory),
+            Some(image),
+            Some(image_view),
+            Some(image_memory),
         )
     }
 
@@ -501,17 +497,25 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         }
     }
 
-    fn alloc_desc_set(&mut self, desc_set_layout: DescSetLayout<B>) -> DescSet<B> {
+    fn alloc_desc_set(&mut self, desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>) -> DescSet<B> {
         // TODO -> fix this
         let descriptor_pool = self.uniform_desc_pool.as_mut().unwrap();
 
         let descriptor_set = unsafe {
-            descriptor_pool.allocate_set(desc_set_layout.layout.as_ref().unwrap())
-        }.unwrap();
+            descriptor_pool
+                .allocate_set(desc_set_layout
+                    .read()
+                    .unwrap()
+                    .layout
+                    .as_ref()
+                    .unwrap()
+                )
+                .unwrap()
+        };
 
         DescSet {
             descriptor_set,
-            desc_set_layout,
+            desc_set_layout: Arc::clone(desc_set_layout),
         }
     }
 }

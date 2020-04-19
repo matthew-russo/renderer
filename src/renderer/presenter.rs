@@ -13,9 +13,11 @@ const VK_FORMAT_R8G8B8A8_SRGB: u32 = 43;
 
 type ImageIndex = u32;
 
-pub(crate) trait Presenter<B: hal::Backend> {
+pub(crate) trait Presenter<B: hal::Backend> : Send + Sync {
+    fn images(&mut self) -> (Vec<B::Image>, hal::format::Format);
+    fn semaphores(&mut self) -> (&B::Semaphore, &B::Semaphore);
     fn acquire_image(&mut self) -> Result<u32, String>;
-    fn present(&mut self, present_semaphore: &B::Semaphore) -> Result<(), String>;
+    fn present(&mut self) -> Result<(), String>;
     fn viewport(&self) -> hal::pso::Viewport;
 }
 
@@ -52,7 +54,7 @@ impl OpenXr {
             &extension_set,
         ).unwrap();
 
-        let mut system_id = instance.system(openxr::FormFactor::HEAD_MOUNTED_DISPLAY).unwrap();
+        let system_id = instance.system(openxr::FormFactor::HEAD_MOUNTED_DISPLAY).unwrap();
 
         Self {
             instance,
@@ -60,32 +62,35 @@ impl OpenXr {
         }
     }
 
-    pub unsafe fn create_vulkan_session(self, session_create_info: VulkanXrSessionCreateInfo) -> Result<VulkanXrSession, String> {
-        use ash::vk::Handle;
+    pub fn create_vulkan_session(self, session_create_info: VulkanXrSessionCreateInfo) -> Result<VulkanXrSession, String> {
+        unsafe {
+            use ash::vk::Handle;
 
-        let create_info = openxr::vulkan::SessionCreateInfo {
-            instance: session_create_info.instance.as_raw() as *const c_void,
-            physical_device: session_create_info.physical_device.as_raw() as *const c_void,
-            device: session_create_info.device.as_raw() as *const c_void,
-            queue_family_index: session_create_info.queue_family_index,
-            queue_index: session_create_info.queue_index,
-        };
+            let create_info = openxr::vulkan::SessionCreateInfo {
+                instance: session_create_info.instance.as_raw() as *const c_void,
+                physical_device: session_create_info.physical_device.as_raw() as *const c_void,
+                device: session_create_info.device.as_raw() as *const c_void,
+                queue_family_index: session_create_info.queue_family_index,
+                queue_index: session_create_info.queue_index,
+            };
 
-        let (session, frame_waiter, frame_stream) = self
-            .instance
-            .create_session(self.system_id, &create_info)
-            .map_err(|e| e.to_string())?;
+            let (session, frame_waiter, frame_stream) = self
+                .instance
+                .create_session(self.system_id, &create_info)
+                .map_err(|e| e.to_string())?;
 
-        Ok(VulkanXrSession {
-            openxr: self,
-            session,
-            frame_waiter,
-            frame_stream,
-            swapchain: None,
-            swapchain_images: None,
-            resolution: None,
-            world_space: None,
-        })
+            Ok(VulkanXrSession {
+                openxr: self,
+                session,
+                frame_waiter,
+                frame_stream,
+                swapchain: None,
+                swapchain_format: hal::format::Format::Rgba8Srgb,
+                swapchain_images: None,
+                resolution: None,
+                world_space: None,
+            })
+        }
     }
 }
 
@@ -95,6 +100,7 @@ struct VulkanXrSession {
     frame_waiter: openxr::FrameWaiter,
     frame_stream: openxr::FrameStream<openxr::Vulkan>,
     swapchain: Option<openxr::Swapchain<openxr::Vulkan>>,
+    swapchain_format: hal::format::Format,
     swapchain_images: Option<Vec<gfx_backend_vulkan::native::Image>>,
     resolution: Option<openxr::Extent2Di>,
     world_space: Option<openxr::Space>,
@@ -158,13 +164,6 @@ impl VulkanXrSession {
         self.world_space = Some(world_space);
     }
 
-    fn draw(&mut self) {
-        // if state.should_render {
-        //     // draw scene
-        //     renderer.draw(i);
-        // }
-    }
-
     fn default_pose() -> openxr::Posef {
         openxr::Posef {
             orientation: openxr::Quaternionf {
@@ -184,7 +183,7 @@ impl VulkanXrSession {
 
 pub(crate) struct XrPresenter<B: hal::Backend, A: Allocator<B>> {
     core: Arc<RwLock<RendererCore<B>>>,
-    allocator: A,
+    allocator: Arc<RwLock<A>>,
     // TODO -> parameterize over graphics api
     vulkan_xr_session: VulkanXrSession,
     rendering_state: Option<openxr::FrameState>,
@@ -193,14 +192,20 @@ pub(crate) struct XrPresenter<B: hal::Backend, A: Allocator<B>> {
 }
 
 impl <B: hal::Backend> XrPresenter<B, GfxAllocator<B>> {
-    fn new(core: &Arc<RwLock<RendererCore<B>>>, allocator: GfxAllocator<B>) -> Self {
-        let mut vulkan_xr_session = OpenXr::init().create_vulkan_session().unwrap();
+    fn session_create_info() -> VulkanXrSessionCreateInfo {
+        unimplemented!()
+    }
+
+    fn new(core: &Arc<RwLock<RendererCore<B>>>, allocator: &Arc<RwLock<GfxAllocator<B>>>) -> Self {
+        let mut vulkan_xr_session = OpenXr::init()
+            .create_vulkan_session(Self::session_create_info())
+            .unwrap();
         vulkan_xr_session.create_swapchain();
         let viewport = Self::create_viewport(&vulkan_xr_session);
 
         Self {
             core: Arc::clone(core),
-            allocator,
+            allocator: Arc::clone(allocator),
             vulkan_xr_session,
             rendering_state: None,
             acquired_image: None,
@@ -222,6 +227,19 @@ impl <B: hal::Backend> XrPresenter<B, GfxAllocator<B>> {
 }
 
 impl <B: hal::Backend> Presenter<B> for XrPresenter<B, GfxAllocator<B>> {
+    fn images(&mut self) -> (Vec<B::Image>, hal::format::Format) {
+        unimplemented!()
+        // TODO -> issue with generics
+        // (
+        //     self.vulkan_xr_session.swapchain_images.take().unwrap(),
+        //     self.vulkan_xr_session.swapchain_format.clone()
+        // )
+    }
+
+    fn semaphores(&mut self) -> (&B::Semaphore, &B::Semaphore) {
+        unimplemented!()
+    }
+
     fn acquire_image(&mut self) -> Result<u32, String> {
         self.rendering_state = Some(self
             .vulkan_xr_session
@@ -232,6 +250,7 @@ impl <B: hal::Backend> Presenter<B> for XrPresenter<B, GfxAllocator<B>> {
         let image = self
             .vulkan_xr_session
             .swapchain
+            .as_mut()
             .unwrap()
             .acquire_image()
             .map_err(|e| e.to_string())?;
@@ -239,6 +258,7 @@ impl <B: hal::Backend> Presenter<B> for XrPresenter<B, GfxAllocator<B>> {
         self
             .vulkan_xr_session
             .swapchain
+            .as_mut()
             .unwrap()
             .wait_image(openxr::Duration::INFINITE)
             .map_err(|e| e.to_string())?;
@@ -253,7 +273,7 @@ impl <B: hal::Backend> Presenter<B> for XrPresenter<B, GfxAllocator<B>> {
         Ok(image)
     }
 
-    fn present(&mut self, present_semaphore: &B::Semaphore) -> Result<(), String> {
+    fn present(&mut self) -> Result<(), String> {
         let (view_flags, views) = self.vulkan_xr_session.session
             .locate_views(
                 openxr::ViewConfigurationType::PRIMARY_STEREO,
@@ -264,6 +284,7 @@ impl <B: hal::Backend> Presenter<B> for XrPresenter<B, GfxAllocator<B>> {
 
         self.vulkan_xr_session
             .swapchain
+            .as_mut()
             .unwrap()
             .release_image()
             .map_err(|e| e.to_string())?;
@@ -280,7 +301,7 @@ impl <B: hal::Backend> Presenter<B> for XrPresenter<B, GfxAllocator<B>> {
                             .fov(views[0].fov)
                             .sub_image(
                                 openxr::SwapchainSubImage::new()
-                                    .swapchain(&self.vulkan_xr_session.swapchain.unwrap())
+                                    .swapchain(&self.vulkan_xr_session.swapchain.as_ref().unwrap())
                                     .image_array_index(0)
                                     .image_rect(openxr::Rect2Di {
                                         offset: openxr::Offset2Di { x: 0, y: 0 },
@@ -292,7 +313,7 @@ impl <B: hal::Backend> Presenter<B> for XrPresenter<B, GfxAllocator<B>> {
                             .fov(views[1].fov)
                             .sub_image(
                                 openxr::SwapchainSubImage::new()
-                                    .swapchain(&self.vulkan_xr_session.swapchain.unwrap())
+                                    .swapchain(self.vulkan_xr_session.swapchain.as_ref().unwrap())
                                     .image_array_index(1)
                                     .image_rect(openxr::Rect2Di {
                                         offset: openxr::Offset2Di { x: 0, y: 0 },
@@ -311,19 +332,20 @@ impl <B: hal::Backend> Presenter<B> for XrPresenter<B, GfxAllocator<B>> {
 
 pub(crate) struct MonitorPresenter<B: hal::Backend, A: Allocator<B>> {
     core: Arc<RwLock<RendererCore<B>>>,
-    allocator: A,
+    allocator: Arc<RwLock<A>>,
     swapchain: SxeSwapchain<B>,
+
     acquired_image: Option<ImageIndex>,
     viewport: hal::pso::Viewport,
 }
 
 impl <B: hal::Backend> MonitorPresenter<B, GfxAllocator<B>> {
-    pub fn new(core: &Arc<RwLock<RendererCore<B>>>, allocator: GfxAllocator<B>) -> Self {
+    pub fn new(core: &Arc<RwLock<RendererCore<B>>>, allocator: &Arc<RwLock<GfxAllocator<B>>>) -> Self {
         let swapchain = SxeSwapchain::new(core);
         let viewport = Self::create_viewport(&swapchain);
         Self {
             core: Arc::clone(core),
-            allocator,
+            allocator: Arc::clone(allocator),
             swapchain,
             acquired_image: None,
             viewport,
@@ -344,6 +366,20 @@ impl <B: hal::Backend> MonitorPresenter<B, GfxAllocator<B>> {
 }
 
 impl <B: hal::Backend> Presenter<B> for MonitorPresenter<B, GfxAllocator<B>> {
+    fn images(&mut self) -> (Vec<B::Image>, hal::format::Format) {
+        (
+            self.swapchain.backbuffer.take().unwrap(),
+            self.swapchain.format.clone()
+        )
+    }
+
+    fn semaphores(&mut self) -> (&B::Semaphore, &B::Semaphore) {
+        (
+            &self.swapchain.acquire_semaphores[self.swapchain.current_sem_index],
+            &self.swapchain.present_semaphores[self.swapchain.current_sem_index],
+        )
+    }
+
     fn acquire_image(&mut self) -> Result<u32, String> {
         use hal::window::Swapchain;
 
@@ -351,48 +387,28 @@ impl <B: hal::Backend> Presenter<B> for MonitorPresenter<B, GfxAllocator<B>> {
             return Err(format!("image {} already acquired without presenting", image_index));
         }
 
-        let (image_index, _maybe_suboptimal) = unsafe {
-            self
-                .swapchain
-                .swapchain
-                .unwrap()
-                .acquire_image(!0, Some(&acquire_semaphore), None)
-                .map_err(|e| e.to_string())?
-        };
+        let (image_index, _maybe_suboptimal) = self.swapchain.acquire_image()?;
 
         self.acquired_image = Some(image_index);
 
         Ok(image_index)
     }
 
-    fn present(&mut self, present_semaphore: &B::Semaphore) -> Result<(), String> {
-        use hal::window::Swapchain;
+    fn present(&mut self) -> Result<(), String> {
+        let image_index = self
+            .acquired_image
+            .take()
+            .ok_or(String::from("no image acquired to present to"))?;
 
-        unsafe {
-            let image_index = self
-                .acquired_image
-                .take()
-                .ok_or(String::from("no image acquired to present to"))?;
+        let queue = &mut self
+            .core
+            .write()
+            .unwrap()
+            .device
+            .queue_group
+            .queues[0];
 
-            let queue = &mut self
-                .core
-                .read()
-                .unwrap()
-                .device
-                .queue_group
-                .queues[0];
-
-            self.swapchain
-                .swapchain
-                .unwrap()
-                .present(
-                    queue,
-                    image_index,
-                    Some(&*present_semaphore)
-                )
-                .map(|v| ())
-                .map_err(|e| e.to_string())
-        }
+        self.swapchain.present(queue, image_index)
     }
 
     fn viewport(&self) -> hal::pso::Viewport {
@@ -406,6 +422,9 @@ pub(crate) struct SxeSwapchain<B: hal::Backend> {
     pub backbuffer: Option<Vec<B::Image>>,
     pub format: hal::format::Format,
     pub extent: hal::image::Extent,
+    pub present_semaphores: Vec<B::Semaphore>,
+    pub acquire_semaphores: Vec<B::Semaphore>,
+    pub current_sem_index: usize,
 }
 
 impl<B: hal::Backend> SxeSwapchain<B> {
@@ -442,8 +461,23 @@ impl<B: hal::Backend> SxeSwapchain<B> {
                 .unwrap()
                 .device
                 .device
-                .create_swapchain(&mut core.read().unwrap().backend.surface, swap_config, None)
+                .create_swapchain(&mut core.write().unwrap().backend.surface, swap_config, None)
         }.expect("Can't create swapchain");
+
+        // TODO -> this is duplicated in Drawer::new
+        let iter_count = if backbuffer.len() != 0 {
+            backbuffer.len()
+        } else {
+            1 // GL can have zero
+        };
+
+        let mut acquire_semaphores = vec![];
+        let mut present_semaphores = vec![];
+
+        for _ in 0..iter_count {
+            acquire_semaphores.push(core.read().unwrap().device.device.create_semaphore().unwrap());
+            present_semaphores.push(core.read().unwrap().device.device.create_semaphore().unwrap());
+        }
 
         Self {
             core: Arc::clone(core),
@@ -451,6 +485,53 @@ impl<B: hal::Backend> SxeSwapchain<B> {
             backbuffer: Some(backbuffer),
             format,
             extent,
+            present_semaphores,
+            acquire_semaphores,
+            current_sem_index: 0,
+        }
+    }
+
+    fn next_sem_index(&mut self) {
+        if self.current_sem_index >= self.acquire_semaphores.len() {
+            self.current_sem_index = 0
+        }
+
+        self.current_sem_index += 1;
+    }
+
+    pub fn acquire_image(&mut self) -> Result<(u32, Option<hal::window::Suboptimal>), String> {
+        use hal::window::Swapchain;
+
+        self.next_sem_index();
+        let acquire_semaphore = &self.acquire_semaphores[self.current_sem_index];
+
+        unsafe {
+            self
+                .swapchain
+                .as_mut()
+                .unwrap()
+                .acquire_image(!0, Some(acquire_semaphore), None)
+                .map_err(|e| e.to_string())
+        }
+    }
+
+    pub fn present(&mut self, queue: &mut B::CommandQueue, image_index: u32) -> Result<(), String> {
+        use hal::window::Swapchain;
+
+        let present_semaphore = &self.present_semaphores[self.current_sem_index];
+
+        unsafe {
+            self
+                .swapchain
+                .as_ref()
+                .unwrap()
+                .present(
+                    queue,
+                    image_index,
+                    Some(&*present_semaphore)
+                )
+                .map(|v| ())
+                .map_err(|e| e.to_string())
         }
     }
 }
@@ -458,12 +539,17 @@ impl<B: hal::Backend> SxeSwapchain<B> {
 impl<B: hal::Backend> Drop for SxeSwapchain<B> {
     fn drop(&mut self) {
         unsafe {
-            self.core
-                .read()
-                .unwrap()
-                .device
-                .device
-                .destroy_swapchain(self.swapchain.take().unwrap());
+            let device = &mut self.core.write().unwrap().device.device;
+
+            device.destroy_swapchain(self.swapchain.take().unwrap());
+
+            for acquire_semaphore in self.acquire_semaphores.drain(..) {
+                device.destroy_semaphore(acquire_semaphore);
+            }
+
+            for present_semaphore in self.present_semaphores.drain(..) {
+                device.destroy_semaphore(present_semaphore);
+            }
         }
     }
 }

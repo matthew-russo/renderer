@@ -21,9 +21,10 @@ use hal::pso::Viewport;
 use hal::device::Device;
 use hal::queue::CommandQueue;
 use crate::renderer::presenter::DIMS;
+use std::ops::DerefMut;
 
-pub(crate) trait Drawer<B: hal::Backend> {
-    fn draw(&mut self, image_index: usize) -> &B::Semaphore;
+pub(crate) trait Drawer<B: hal::Backend> : Send + Sync {
+    fn draw(&mut self, image_index: usize, acquire_semaphore: &B::Semaphore, present_semaphore: &B::Semaphore);
     fn update_drawables(&mut self, drawables: Vec<Drawable>) -> Result<(), String>;
     fn update_uniforms(&mut self, uniforms: Vec<ObjectUniformBufferObject>) -> Result<(), String>;
     fn update_camera(&mut self, transform: Transform) -> Result<(), String>;
@@ -31,14 +32,14 @@ pub(crate) trait Drawer<B: hal::Backend> {
 
 pub(crate) struct GfxDrawer<B: hal::Backend, A: Allocator<B>> {
     core: Arc<RwLock<RendererCore<B>>>,
-    allocator: A,
+    allocator: Arc<RwLock<A>>,
 
     framebuffers: Framebuffers<B>,
     render_pass: RenderPass<B>,
     pipeline: Pipeline<B>,
     viewport: Viewport,
 
-    texture_desc_set_layout: DescSetLayout<B>,
+    texture_desc_set_layout: Arc<RwLock<DescSetLayout<B>>>,
     textures: HashMap<RenderKey, crate::renderer::types::Texture<B>>,
 
     vertex_buffer: Option<Buffer<B>>,
@@ -51,18 +52,18 @@ pub(crate) struct GfxDrawer<B: hal::Backend, A: Allocator<B>> {
 }
 
 impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
-    pub fn new(core: &Arc<RwLock<RendererCore<B>>>, mut allocator: GfxAllocator<B>, viewport: Viewport) -> Self {
+    pub fn new(core: &Arc<RwLock<RendererCore<B>>>, allocator: &Arc<RwLock<GfxAllocator<B>>>, viewport: Viewport, images: Vec<B::Image>, image_format: hal::format::Format) -> Self {
         let render_pass = RenderPass::new(
             core,
-            swapchain_format,
+            image_format,
         );
 
-        let depth_image = allocator.alloc_image(
+        let depth_image = allocator.write().unwrap().alloc_image(
             viewport.rect.w as u32,
             viewport.rect.h as u32,
             hal::format::Format::D32SfloatS8Uint,
             hal::image::Usage::DEPTH_STENCIL_ATTACHMENT,
-            hal::format::Aspects::DEPTH | Aspects::STENCIL
+            hal::format::Aspects::DEPTH | hal::format::Aspects::STENCIL
         );
 
         let framebuffers = unsafe {
@@ -81,7 +82,7 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
         };
 
         let camera_uniform = Self::init_uniform(
-            &mut allocator,
+            &mut allocator.write().unwrap(),
             &vec![hal::pso::DescriptorSetLayoutBinding {
                 binding: 0,
                 ty: hal::pso::DescriptorType::Buffer {
@@ -98,7 +99,7 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
         );
 
         let object_uniform = Self::init_uniform(
-            &mut allocator,
+            &mut allocator.write().unwrap(),
             &vec![hal::pso::DescriptorSetLayoutBinding {
                 binding: 0,
                 ty: hal::pso::DescriptorType::Buffer {
@@ -114,7 +115,7 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
             &[ObjectUniformBufferObject::default()],
         );
 
-        let texture_desc_set_layout = allocator.alloc_desc_set_layout(
+        let texture_desc_set_layout = allocator.write().unwrap().alloc_desc_set_layout(
             &vec![hal::pso::DescriptorSetLayoutBinding {
                 binding: 0,
                 ty: hal::pso::DescriptorType::Image {
@@ -132,8 +133,8 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
                 core,
                 render_pass.render_pass.as_ref().unwrap(),
                 vec![
-                    camera_uniform.desc.as_ref().unwrap().desc_set_layout.layout.as_ref().unwrap(),
-                    object_uniform.desc.as_ref().unwrap().desc_set_layout.layout.as_ref().unwrap(),
+                    camera_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
+                    object_uniform.desc.as_ref().unwrap().desc_set_layout.read().unwrap().layout.as_ref().unwrap(),
                     texture_desc_set_layout.layout.as_ref().unwrap()
                 ],
                 "shaders/standard.vert",
@@ -143,12 +144,12 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
 
         Self {
             core: Arc::clone(core),
-            allocator,
+            allocator: Arc::clone(allocator),
             framebuffers,
             render_pass,
             pipeline,
             viewport,
-            texture_desc_set_layout,
+            texture_desc_set_layout: Arc::new(RwLock::new(texture_desc_set_layout)),
             textures: HashMap::new(),
             vertex_buffer: None,
             index_buffer: None,
@@ -163,8 +164,9 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
         where T: Copy,
               T: std::fmt::Debug
     {
+        // TODO -> this is all weird cause we allocate a new desc_set_layout but then wrap it.
         let desc_set_layout = allocator.alloc_desc_set_layout(bindings);
-        let desc_set = allocator.alloc_desc_set(desc_set_layout);
+        let desc_set = allocator.alloc_desc_set(&Arc::new(RwLock::new(desc_set_layout)));
         allocator.alloc_uniform(data, desc_set, 0)
     }
 
@@ -191,7 +193,7 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
             .collect::<Vec<u32>>();
 
         let vertex_alignment = self.core.read().unwrap().backend.adapter.limits.min_vertex_input_binding_stride_alignment;
-        let vertex_buffer = self.allocator.alloc_buffer(
+        let vertex_buffer = self.allocator.write().unwrap().alloc_buffer(
             &vertices,
             vertex_alignment,
             65536,
@@ -199,7 +201,7 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
             hal::memory::Properties::CPU_VISIBLE,
         );
 
-        let index_buffer = self.allocator.alloc_buffer(
+        let index_buffer = self.allocator.write().unwrap().alloc_buffer(
             &indices,
             1,
             65536,
@@ -224,10 +226,11 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
         }
 
         for domain_texture in new_textures.into_iter() {
-            let texture = self.allocator.alloc_texture(
+            let texture = self.allocator.write().unwrap().alloc_texture(
                 hal::buffer::Usage::TRANSFER_SRC,
                 &domain_texture.path,
                 &hal::image::SamplerDesc::new(hal::image::Filter::Linear, hal::image::WrapMode::Clamp),
+                &self.texture_desc_set_layout,
             );
             self.textures.insert(RenderKey::from(domain_texture), texture);
         }
@@ -350,9 +353,9 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
 
 impl <B: hal::Backend, A: Allocator<B>> Drop for GfxDrawer<B, A> {
     fn drop(&mut self) {
-        let readable_core = self.core.read().unwrap();
-        let raw_device = &mut readable_core.device.device;
-        self.texture_desc_set_layout.drop(raw_device);
+        let mut writable_core = self.core.write().unwrap();
+        let raw_device = &mut writable_core.device.device;
+        self.texture_desc_set_layout.write().unwrap().deref_mut().drop(raw_device);
         self.vertex_buffer.take().unwrap().drop(raw_device);
         self.index_buffer.take().unwrap().drop(raw_device);
         self.camera_uniform.drop(raw_device);
@@ -385,14 +388,9 @@ pub fn fps_view_matrix(eye: Vector3<f32>, pitch_rad: cgmath::Rad<f32>, yaw_rad: 
 }
 
 impl <B: hal::Backend> Drawer<B> for GfxDrawer<B, GfxAllocator<B>> {
-    fn draw(&mut self, image_index: usize) -> &B::Semaphore {
+    fn draw(&mut self, image_index: usize, acquire_semaphore: &B::Semaphore, present_semaphore: &B::Semaphore) {
         unsafe {
-
-            // TODO: THIS SHOULD BE REFACTORED
-            let sem_index = self.framebuffers.next_acq_pre_pair_index();
-            let (fid, sid) = self.framebuffers.get_frame_data(Some(image_index), Some(sem_index));
-            let (framebuffer_fence, command_buffer) = fid.unwrap();
-            let (image_acquired_semaphore, image_present_semaphore) = sid.unwrap();
+            let (framebuffer_fence, command_buffer) = self.framebuffers.get_frame_data(Some(image_index)).unwrap();
 
             self
                 .core
@@ -414,8 +412,8 @@ impl <B: hal::Backend> Drawer<B> for GfxDrawer<B, GfxAllocator<B>> {
 
             let submission = hal::queue::Submission {
                 command_buffers: std::iter::once(&*command_buffer),
-                wait_semaphores: std::iter::once((&*image_acquired_semaphore, hal::pso::PipelineStage::BOTTOM_OF_PIPE)),
-                signal_semaphores: std::iter::once(&*image_present_semaphore),
+                wait_semaphores: std::iter::once((&*acquire_semaphore, hal::pso::PipelineStage::BOTTOM_OF_PIPE)),
+                signal_semaphores: std::iter::once(&*present_semaphore),
             };
 
             self
@@ -426,8 +424,6 @@ impl <B: hal::Backend> Drawer<B> for GfxDrawer<B, GfxAllocator<B>> {
                 .queue_group
                 .queues[0]
                 .submit(submission, Some(framebuffer_fence));
-
-            image_acquired_semaphore
         }
     }
 
@@ -449,7 +445,7 @@ impl <B: hal::Backend> Drawer<B> for GfxDrawer<B, GfxAllocator<B>> {
 
             self.generate_vertex_and_index_buffers(
                 drawables
-                    .iter_mut()
+                    .iter()
                     .map(|d| &d.mesh)
                     .collect::<Vec<&Mesh>>()
             );
@@ -470,14 +466,12 @@ impl <B: hal::Backend> Drawer<B> for GfxDrawer<B, GfxAllocator<B>> {
     }
 
     fn update_uniforms(&mut self, uniforms: Vec<ObjectUniformBufferObject>) -> Result<(), String> {
-        unsafe {
-            self
-                .object_uniform
-                .buffer
-                .as_mut()
-                .unwrap()
-                .update_data(&self.core, 0, &uniforms);
-        }
+        self
+            .object_uniform
+            .buffer
+            .as_mut()
+            .unwrap()
+            .update_data(&self.core, 0, &uniforms);
 
         Ok(())
     }
@@ -718,9 +712,6 @@ struct Framebuffers<B: hal::Backend> {
     command_pools: Option<Vec<B::CommandPool>>,
     command_buffers: Option<Vec<B::CommandBuffer>>,
     frame_images: Option<Vec<(B::Image, B::ImageView)>>,
-    acquire_semaphores: Option<Vec<B::Semaphore>>,
-    present_semaphores: Option<Vec<B::Semaphore>>,
-    last_ref: usize,
     depth_image: Image<B>,
 }
 
@@ -768,7 +759,7 @@ impl<B: hal::Backend> Framebuffers<B> {
                         .device
                         .create_framebuffer(
                             render_pass.render_pass.as_ref().unwrap(),
-                            vec![image_view, &depth_image.image_view.unwrap()],
+                            vec![image_view, depth_image.image_view.as_ref().unwrap()],
                             extent,
                         )
                         .unwrap()
@@ -786,8 +777,6 @@ impl<B: hal::Backend> Framebuffers<B> {
 
         let mut fences: Vec<B::Fence> = vec![];
         let mut command_pools: Vec<B::CommandPool> = vec![];
-        let mut acquire_semaphores: Vec<B::Semaphore> = vec![];
-        let mut present_semaphores: Vec<B::Semaphore> = vec![];
 
         for _ in 0..iter_count {
             fences.push(core.read().unwrap().device.device.create_fence(true).unwrap());
@@ -808,9 +797,6 @@ impl<B: hal::Backend> Framebuffers<B> {
                     )
                     .expect("Can't create command pool"),
             );
-
-            acquire_semaphores.push(core.read().unwrap().device.device.create_semaphore().unwrap());
-            present_semaphores.push(core.read().unwrap().device.device.create_semaphore().unwrap());
         }
 
         Self {
@@ -820,64 +806,32 @@ impl<B: hal::Backend> Framebuffers<B> {
             framebuffer_fences: Some(fences),
             command_pools: Some(command_pools),
             command_buffers: None,
-            present_semaphores: Some(present_semaphores),
-            acquire_semaphores: Some(acquire_semaphores),
-            last_ref: 0,
             depth_image,
         }
     }
 
-    fn next_acq_pre_pair_index(&mut self) -> usize {
-        if self.last_ref >= self.acquire_semaphores.as_ref().unwrap().len() {
-            self.last_ref = 0
-        }
-
-        let ret = self.last_ref;
-        self.last_ref += 1;
-        ret
-    }
-
-    // struct FrameData {
-    //     framebuffer_fence: B::Fence,
-    //     command_buffer: B::CommandBuffer,
-    //     image_acquired_semaphore: B::Semaphore,
-    //     image_present_sempahore: B::Semaphore,
-    // }
     fn get_frame_data(
         &mut self,
-        frame_id: Option<usize>,
-        sem_index: Option<usize>,
-    ) -> (
-        Option<(
+        frame_id: Option<usize>)
+        -> Option<(
             &mut B::Fence,
             &mut B::CommandBuffer
-        )>,
-        Option<(&mut B::Semaphore, &mut B::Semaphore)>,
-    ) {
-        (
-            if let Some(fid) = frame_id {
-                Some((
-                    &mut self.framebuffer_fences.as_mut().unwrap()[fid],
-                    &mut self.command_buffers.as_mut().unwrap()[fid]
-                ))
-            } else {
-                None
-            },
-            if let Some(sid) = sem_index {
-                Some((
-                    &mut self.acquire_semaphores.as_mut().unwrap()[sid],
-                    &mut self.present_semaphores.as_mut().unwrap()[sid]
-                ))
-            } else {
-                None
-            },
-        )
+        )>
+    {
+        if let Some(fid) = frame_id {
+            Some((
+                &mut self.framebuffer_fences.as_mut().unwrap()[fid],
+                &mut self.command_buffers.as_mut().unwrap()[fid]
+            ))
+        } else {
+            None
+        }
     }
 }
 
 impl<B: hal::Backend> Drop for Framebuffers<B> {
     fn drop(&mut self) {
-        let device = &mut self.core.read().unwrap().device.device;
+        let device = &mut self.core.write().unwrap().device.device;
 
         unsafe {
             for fence in self.framebuffer_fences.take().unwrap() {
@@ -887,14 +841,6 @@ impl<B: hal::Backend> Drop for Framebuffers<B> {
 
             for command_pool in self.command_pools.take().unwrap() {
                 device.destroy_command_pool(command_pool);
-            }
-
-            for acquire_semaphore in self.acquire_semaphores.take().unwrap() {
-                device.destroy_semaphore(acquire_semaphore);
-            }
-
-            for present_semaphore in self.present_semaphores.take().unwrap() {
-                device.destroy_semaphore(present_semaphore);
             }
 
             for framebuffer in self.framebuffers.take().unwrap() {

@@ -8,24 +8,26 @@ pub(crate) struct RendererCore<B: hal::Backend> {
 }
 
 impl RendererCore<back::Backend> {
-    pub unsafe fn new(size: winit::dpi::LogicalSize<f64>, event_loop: &winit::event_loop::EventLoop<()>) -> Self {
-        let window_builder = winit::window::WindowBuilder::new()
-            .with_title("sxe")
-            .with_inner_size(size);
-        let (backend, _instance) = create_backend(window_builder, event_loop);
-        let device = GfxDevice::new(
-            backend.adapter.adapter.take().unwrap(),
-            &backend.surface
-        );
+    pub fn new(size: winit::dpi::LogicalSize<f64>, event_loop: &winit::event_loop::EventLoop<()>) -> Self {
+        unsafe {
+            let window_builder = winit::window::WindowBuilder::new()
+                .with_title("sxe")
+                .with_inner_size(size);
+            let (mut backend, _instance) = create_backend(window_builder, event_loop);
+            let device = GfxDevice::new(
+                backend.adapter.adapter.take().unwrap(),
+                &backend.surface
+            );
 
-        Self {
-            backend,
-            device,
+            Self {
+                backend,
+                device,
+            }
         }
     }
 }
 
-struct GfxAdapter<B: hal::Backend> {
+pub(crate) struct GfxAdapter<B: hal::Backend> {
     pub adapter: Option<hal::adapter::Adapter<B>>,
     pub memory_types: Vec<MemoryType>,
     pub limits: hal::Limits,
@@ -60,7 +62,7 @@ impl <B: hal::Backend> GfxAdapter<B> {
     }
 }
 
-pub struct GfxBackend<B: hal::Backend> {
+pub(crate) struct GfxBackend<B: hal::Backend> {
     pub surface: B::Surface,
     pub adapter: GfxAdapter<B>,
 

@@ -86,9 +86,9 @@ use legion::query::{Read, Write, IntoQuery, Query};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::ControlFlow;
 use crate::renderer::core::RendererCore;
-use crate::renderer::allocator::{Allocator, GfxAllocator};
+use crate::renderer::allocator::{GfxAllocator};
 use crate::renderer::drawer::{Drawer, GfxDrawer};
-use crate::renderer::presenter::{Presenter, MonitorPresenter, XrPresenter};
+use crate::renderer::presenter::{Presenter, MonitorPresenter};
 use crate::primitives::uniform_buffer_object::ObjectUniformBufferObject;
 
 fn main() {
@@ -101,15 +101,16 @@ fn main() {
 
     let event_loop = winit::event_loop::EventLoop::new();
     let renderer_core = Arc::new(RwLock::new(RendererCore::new(default_logical_size, &event_loop)));
-    let allocator = GfxAllocator::new(&renderer_core);
+    let allocator = Arc::new(RwLock::new(GfxAllocator::new(&renderer_core)));
 
     #[cfg(feature = "xr")]
-    let presenter = XrPresenter::new(&renderer_core, allocator);
+    let mut presenter = XrPresenter::new(&renderer_core, &allocator);
 
     #[cfg(not(feature = "xr"))]
-    let presenter = MonitorPresenter::new(&renderer_core, allocator);
+    let mut presenter = MonitorPresenter::new(&renderer_core, &allocator);
 
-    let drawer = GfxDrawer::new(&renderer_core, allocator, presenter.viewport());
+    let (images, image_format) = presenter.images();
+    let drawer = GfxDrawer::new(&renderer_core, &allocator, presenter.viewport(), images, image_format);
 
     let event_handler = Arc::new(RwLock::new(EventHandler::new()));
 
@@ -131,7 +132,7 @@ fn main() {
     });
 }
 
-fn start_engine<B: hal::Backend, D: Drawer<B>, P: Presenter<B>>(mut drawer: D, mut presenter: P, event_handler_shared: &Arc<RwLock<EventHandler>>) {
+fn start_engine<B: hal::Backend, D: Drawer<B> + 'static, P: Presenter<B> + 'static>(mut drawer: D, mut presenter: P, event_handler_shared: &Arc<RwLock<EventHandler>>) {
     let event_handler = event_handler_shared.clone();
 
     std::thread::spawn(move || {
@@ -156,9 +157,7 @@ fn start_engine<B: hal::Backend, D: Drawer<B>, P: Presenter<B>>(mut drawer: D, m
             vec![(Config::new() ,)],
         );
 
-        unsafe {
-            drawer.update_drawables(fetch_drawables(&world));
-        }
+        drawer.update_drawables(fetch_drawables(&world));
 
         loop {
             event_handler.write().unwrap().handle_events(&world);
@@ -171,7 +170,7 @@ fn start_engine<B: hal::Backend, D: Drawer<B>, P: Presenter<B>>(mut drawer: D, m
 
             let mut need_to_update_config = false;
             if <Read<Config>>::query().iter(&mut world).next().unwrap().should_record_commands {
-                unsafe { drawer.update_drawables(fetch_drawables(&world)) };
+                drawer.update_drawables(fetch_drawables(&world));
                 need_to_update_config = true;
             }
 
@@ -184,13 +183,12 @@ fn start_engine<B: hal::Backend, D: Drawer<B>, P: Presenter<B>>(mut drawer: D, m
                 config.should_record_commands = false;
             }
 
-            unsafe {
-                drawer.update_uniforms(fetch_uniforms(&world)).unwrap();
-                drawer.update_camera(fetch_camera_transform(&world)).unwrap();
-                let image_index = presenter.acquire_image().unwrap();
-                let present_semaphore = drawer.draw(image_index as usize);
-                presenter.present(present_semaphore);
-            }
+            drawer.update_uniforms(fetch_uniforms(&world)).unwrap();
+            drawer.update_camera(fetch_camera_transform(&world)).unwrap();
+            let image_index = presenter.acquire_image().unwrap();
+            let (acquire_semaphore, present_semaphore) = presenter.semaphores();
+            drawer.draw(image_index as usize, acquire_semaphore, present_semaphore);
+            presenter.present();
         }
     });
 }

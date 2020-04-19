@@ -1,9 +1,10 @@
 use std::sync::{Arc, RwLock};
-use crate::utils::{any_as_u8_slice};
+use crate::utils::{any_as_u8_slice, data_path};
 use crate::renderer::core::RendererCore;
 use hal::device::Device;
 use std::fs::File;
 use std::io::BufReader;
+use std::ops::DerefMut;
 
 pub(crate) struct Buffer<B: hal::Backend> {
     pub buffer: Option<B::Buffer>,
@@ -80,8 +81,8 @@ impl <B: hal::Backend> Uniform<B> {
     }
 
     pub fn drop(&mut self, device: &mut B::Device) {
-        self.buffer.unwrap().drop(device);
-        self.desc.unwrap().drop(device);
+        self.buffer.as_mut().unwrap().drop(device);
+        self.desc.as_mut().unwrap().drop(device);
     }
 }
 
@@ -141,7 +142,7 @@ impl <B: hal::Backend> Texture<B> {
     }
 }
 
-struct TextureData {
+pub(crate) struct TextureData {
     pub width: u32,
     pub height: u32,
     pub data: Vec<u8>,
@@ -149,8 +150,10 @@ struct TextureData {
 }
 
 impl TextureData {
-    fn load(img_path: &str, row_alignment_mask: u32) -> Self {
-        let img = image::load_image(img_reader, image::JPEG)
+    pub fn load(img_path: &str, row_alignment_mask: u32) -> Self {
+        let img_file = File::open(data_path(img_path)).unwrap();
+        let img_reader = BufReader::new(img_file);
+        let img = image::load(img_reader, image::JPEG)
             .unwrap()
             .to_rgba();
 
@@ -176,14 +179,14 @@ impl TextureData {
             height,
             data,
             format: hal::format::Format::Rgba8Srgb,
-        };
+        }
     }
 }
 
 pub(crate) struct DescSetWrite<WI> {
-    binding: hal::pso::DescriptorBinding,
-    array_offset: hal::pso::DescriptorArrayIndex,
-    descriptors: WI
+    pub binding: hal::pso::DescriptorBinding,
+    pub array_offset: hal::pso::DescriptorArrayIndex,
+    pub descriptors: WI
 }
 
 pub(crate) struct DescSetLayout<B: hal::Backend> {
@@ -206,7 +209,7 @@ impl<B: hal::Backend> DescSetLayout<B> {
 
 pub(crate) struct DescSet<B: hal::Backend> {
     pub descriptor_set: B::DescriptorSet,
-    pub desc_set_layout: DescSetLayout<B>,
+    pub desc_set_layout: Arc<RwLock<DescSetLayout<B>>>,
 }
 // vec![
 //     hal::pso::DescriptorSetWrite {
@@ -243,6 +246,6 @@ impl<B: hal::Backend> DescSet<B> {
     }
 
     pub fn drop(&mut self, device: &mut B::Device) {
-         self.desc_set_layout.drop(device);
+         self.desc_set_layout.write().unwrap().deref_mut().drop(device);
     }
 }
