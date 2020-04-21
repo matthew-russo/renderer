@@ -548,7 +548,7 @@ impl<B: hal::Backend> SxeSwapchain<B> {
     }
 }
 
-impl<B: hal::Backend> Drop for SxeSwapchain<B> {
+impl <B: hal::Backend> Drop for SxeSwapchain<B> {
     fn drop(&mut self) {
         unsafe {
             let device = &mut self.core.write().unwrap().device.device;

@@ -33,6 +33,17 @@ pub(crate) struct GfxAllocator<B: hal::Backend> {
     uniform_desc_pool: Option<B::DescriptorPool>,
 }
 
+impl <B: hal::Backend> Drop for GfxAllocator<B> {
+    fn drop(&mut self) {
+        let device = &mut self.core.write().unwrap().device.device;
+
+        unsafe {
+            device.destroy_descriptor_pool(self.image_desc_pool.take().unwrap());
+            device.destroy_descriptor_pool(self.uniform_desc_pool.take().unwrap());
+        }
+    }
+}
+
 impl <B: hal::Backend> GfxAllocator<B> {
     pub fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
         unsafe {

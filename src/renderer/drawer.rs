@@ -356,8 +356,17 @@ impl <B: hal::Backend, A: Allocator<B>> Drop for GfxDrawer<B, A> {
         let mut writable_core = self.core.write().unwrap();
         let raw_device = &mut writable_core.device.device;
         self.texture_desc_set_layout.write().unwrap().deref_mut().drop(raw_device);
-        self.vertex_buffer.take().unwrap().drop(raw_device);
-        self.index_buffer.take().unwrap().drop(raw_device);
+
+        match self.vertex_buffer.take() {
+            Some(mut vb) => vb.drop(raw_device),
+            None => (),
+        }
+
+        match self.index_buffer.take() {
+            Some(mut ib) => ib.drop(raw_device),
+            None => (),
+        }
+
         self.camera_uniform.drop(raw_device);
         self.object_uniform.drop(raw_device);
         for texture in self.textures.values_mut() {

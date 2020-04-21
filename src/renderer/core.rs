@@ -65,14 +65,6 @@ impl <B: hal::Backend> GfxAdapter<B> {
     }
 }
 
-pub(crate) struct GfxBackend<B: hal::Backend> {
-    pub surface: Arc<RwLock<B::Surface>>,
-    pub adapter: GfxAdapter<B>,
-
-    #[cfg(any(feature = "vulkan", feature = "dx11", feature = "dx12", feature = "metal"))]
-    #[allow(dead_code)]
-    pub window: winit::window::Window,
-}
 
 pub(crate) struct GfxDevice<B: hal::Backend> {
     pub device: B::Device,
@@ -114,6 +106,14 @@ impl <B: hal::Backend> GfxDevice<B> {
     }
 }
 
+pub(crate) struct GfxBackend<B: hal::Backend> {
+    pub surface: Arc<RwLock<B::Surface>>,
+    pub adapter: GfxAdapter<B>,
+
+    #[cfg(any(feature = "vulkan", feature = "dx11", feature = "dx12", feature = "metal"))]
+    #[allow(dead_code)]
+    pub window: winit::window::Window,
+}
 
 impl <B: hal::Backend> GfxBackend<B> {
     pub fn window(&self) -> &winit::window::Window {
