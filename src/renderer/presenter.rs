@@ -1,12 +1,12 @@
 use std::sync::{Arc, RwLock};
-use hal::window::{Extent2D};
+use hal::window::{Extent2D, Surface};
 use hal::device::Device;
-use hal::window::Surface;
 use crate::renderer::core::RendererCore;
 use crate::renderer::allocator::{Allocator, GfxAllocator};
 use ash::vk;
 use std::path::Path;
 use std::ffi::c_void;
+use std::ops::DerefMut;
 
 pub const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 const VK_FORMAT_R8G8B8A8_SRGB: u32 = 43;
@@ -434,6 +434,8 @@ impl<B: hal::Backend> SxeSwapchain<B> {
             .unwrap()
             .backend
             .surface
+            .read()
+            .unwrap()
             .capabilities(&core.read().unwrap().device.physical_device);
 
         let formats = core
@@ -441,6 +443,8 @@ impl<B: hal::Backend> SxeSwapchain<B> {
             .unwrap()
             .backend
             .surface
+            .read()
+            .unwrap()
             .supported_formats(&core.read().unwrap().device.physical_device);
 
         let format = formats.map_or(hal::format::Format::Rgba8Srgb, |formats| {
@@ -456,12 +460,20 @@ impl<B: hal::Backend> SxeSwapchain<B> {
         let extent = swap_config.extent.to_extent();
 
         let (swapchain, backbuffer) = unsafe {
-            core
+            let surface_arc = Arc::clone(&core
                 .write()
+                .unwrap()
+                .backend
+                .surface);
+
+            let mut writable_surface = surface_arc.write().unwrap();
+
+            core
+                .read()
                 .unwrap()
                 .device
                 .device
-                .create_swapchain(&mut core.write().unwrap().backend.surface, swap_config, None)
+                .create_swapchain(writable_surface.deref_mut(), swap_config, None)
         }.expect("Can't create swapchain");
 
         // TODO -> this is duplicated in Drawer::new

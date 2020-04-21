@@ -1,3 +1,5 @@
+use std::sync::{Arc, RwLock};
+use std::ops::Deref;
 use hal::adapter::{MemoryType, PhysicalDevice};
 use hal::Instance;
 use hal::queue::QueueFamily;
@@ -14,9 +16,10 @@ impl RendererCore<back::Backend> {
                 .with_title("sxe")
                 .with_inner_size(size);
             let (mut backend, _instance) = create_backend(window_builder, event_loop);
+
             let device = GfxDevice::new(
                 backend.adapter.adapter.take().unwrap(),
-                &backend.surface
+                backend.surface.read().unwrap().deref()
             );
 
             Self {
@@ -63,7 +66,7 @@ impl <B: hal::Backend> GfxAdapter<B> {
 }
 
 pub(crate) struct GfxBackend<B: hal::Backend> {
-    pub surface: B::Surface,
+    pub surface: Arc<RwLock<B::Surface>>,
     pub adapter: GfxAdapter<B>,
 
     #[cfg(any(feature = "vulkan", feature = "dx11", feature = "dx12", feature = "metal"))]
@@ -137,7 +140,7 @@ fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &win
     };
 
     let backend_state = GfxBackend {
-        surface,
+        surface: Arc::new(RwLock::new(surface)),
         adapter: GfxAdapter::new(adapters),
     };
 
@@ -155,7 +158,7 @@ fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &win
     let mut adapters = instance.enumerate_adapters();
 
     let backend_state = GfxBackend {
-        surface,
+        surface: Arc::new(RwLock::new(surface)),
         adapter: GfxAdapter::new(&mut adapters),
         window
     };
