@@ -1,10 +1,10 @@
 use std::sync::{Arc, RwLock};
-use std::ops::Deref;
 use hal::adapter::{MemoryType, PhysicalDevice};
 use hal::Instance;
 use hal::queue::QueueFamily;
 
 pub(crate) struct RendererCore<B: hal::Backend> {
+    instance: B::Instance,
     pub backend: GfxBackend<B>,
     pub device: GfxDevice<B>,
 }
@@ -15,17 +15,26 @@ impl RendererCore<back::Backend> {
             let window_builder = winit::window::WindowBuilder::new()
                 .with_title("sxe")
                 .with_inner_size(size);
-            let (mut backend, _instance) = create_backend(window_builder, event_loop);
+            let (mut backend, instance) = create_backend(window_builder, event_loop);
 
             let device = GfxDevice::new(
                 backend.adapter.adapter.take().unwrap(),
-                backend.surface.read().unwrap().deref()
+                backend.surface.read().unwrap().as_ref().unwrap(),
             );
 
             Self {
+                instance,
                 backend,
                 device,
             }
+        }
+    }
+}
+
+impl <B: hal::Backend> Drop for RendererCore<B> {
+    fn drop(&mut self) {
+        unsafe {
+            self.instance.destroy_surface(self.backend.surface.write().unwrap().take().unwrap())
         }
     }
 }
@@ -107,7 +116,7 @@ impl <B: hal::Backend> GfxDevice<B> {
 }
 
 pub(crate) struct GfxBackend<B: hal::Backend> {
-    pub surface: Arc<RwLock<B::Surface>>,
+    pub surface: Arc<RwLock<Option<B::Surface>>>,
     pub adapter: GfxAdapter<B>,
 
     #[cfg(any(feature = "vulkan", feature = "dx11", feature = "dx12", feature = "metal"))]
@@ -140,7 +149,7 @@ fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &win
     };
 
     let backend_state = GfxBackend {
-        surface: Arc::new(RwLock::new(surface)),
+        surface: Arc::new(RwLock::new(Some(surface))),
         adapter: GfxAdapter::new(adapters),
     };
 
@@ -158,7 +167,7 @@ fn create_backend(window_builder: winit::window::WindowBuilder, event_loop: &win
     let mut adapters = instance.enumerate_adapters();
 
     let backend_state = GfxBackend {
-        surface: Arc::new(RwLock::new(surface)),
+        surface: Arc::new(RwLock::new(Some(surface))),
         adapter: GfxAdapter::new(&mut adapters),
         window
     };

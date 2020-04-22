@@ -6,7 +6,6 @@ use crate::renderer::allocator::{Allocator, GfxAllocator};
 use ash::vk;
 use std::path::Path;
 use std::ffi::c_void;
-use std::ops::DerefMut;
 
 pub const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 const VK_FORMAT_R8G8B8A8_SRGB: u32 = 43;
@@ -436,6 +435,8 @@ impl<B: hal::Backend> SxeSwapchain<B> {
             .surface
             .read()
             .unwrap()
+            .as_ref()
+            .unwrap()
             .capabilities(&core.read().unwrap().device.physical_device);
 
         let formats = core
@@ -444,6 +445,8 @@ impl<B: hal::Backend> SxeSwapchain<B> {
             .backend
             .surface
             .read()
+            .unwrap()
+            .as_ref()
             .unwrap()
             .supported_formats(&core.read().unwrap().device.physical_device);
 
@@ -473,7 +476,7 @@ impl<B: hal::Backend> SxeSwapchain<B> {
                 .unwrap()
                 .device
                 .device
-                .create_swapchain(writable_surface.deref_mut(), swap_config, None)
+                .create_swapchain(writable_surface.as_mut().unwrap(), swap_config, None)
         }.expect("Can't create swapchain");
 
         // TODO -> this is duplicated in Drawer::new
