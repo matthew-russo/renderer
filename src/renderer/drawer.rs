@@ -4,7 +4,7 @@ use std::collections::{HashMap, BTreeMap};
 use crate::components::{mesh::Mesh, transform::Transform};
 use crate::primitives::{drawable::Drawable, vertex::Vertex};
 use crate::primitives::uniform_buffer_object::{CameraUniformBufferObject, ObjectUniformBufferObject};
-use crate::renderer::allocator::{COLOR_RANGE, Allocator, GfxAllocator};
+use crate::renderer::allocator::{COLOR_RANGE, Allocator, GfxAllocator, DescriptorPoolType};
 use crate::renderer::types::{Image, Uniform, Buffer, DescSetLayout};
 use crate::renderer::render_key::RenderKey;
 use crate::renderer::core::RendererCore;
@@ -166,7 +166,7 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
     {
         // TODO -> this is all weird cause we allocate a new desc_set_layout but then wrap it.
         let desc_set_layout = allocator.alloc_desc_set_layout(bindings);
-        let desc_set = allocator.alloc_desc_set(&Arc::new(RwLock::new(desc_set_layout)));
+        let desc_set = allocator.alloc_desc_set(DescriptorPoolType::Uniform, &Arc::new(RwLock::new(desc_set_layout)));
         allocator.alloc_uniform(data, desc_set, 0)
     }
 

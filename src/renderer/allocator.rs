@@ -13,6 +13,11 @@ pub const COLOR_RANGE: hal::image::SubresourceRange = hal::image::SubresourceRan
     layers: 0..1,
 };
 
+pub(crate) enum DescriptorPoolType {
+    Uniform,
+    Texture,
+}
+
 pub(crate) trait Allocator<B: hal::Backend> {
     fn alloc_buffer<T>(&mut self, data: &[T], alignment: u64, min_size: u64, usage: hal::buffer::Usage, memory_properties: hal::memory::Properties) -> Buffer<B>
         where T: Copy,
@@ -23,7 +28,7 @@ pub(crate) trait Allocator<B: hal::Backend> {
     fn alloc_image(&mut self, width: u32, height: u32, format: hal::format::Format, usage: hal::image::Usage, aspects: hal::format::Aspects) -> Image<B>;
     fn alloc_texture(&mut self, usage: hal::buffer::Usage, img_path: &String, sampler_desc: &hal::image::SamplerDesc, image_desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>) -> Texture<B>;
     fn alloc_desc_set_layout(&mut self, bindings: &[hal::pso::DescriptorSetLayoutBinding]) -> DescSetLayout<B>;
-    fn alloc_desc_set(&mut self, desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>) -> DescSet<B>;
+    fn alloc_desc_set(&mut self, pool_type: DescriptorPoolType, desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>) -> DescSet<B>;
 }
 
 pub(crate) struct GfxAllocator<B: hal::Backend> {
@@ -31,17 +36,6 @@ pub(crate) struct GfxAllocator<B: hal::Backend> {
 
     image_desc_pool: Option<B::DescriptorPool>,
     uniform_desc_pool: Option<B::DescriptorPool>,
-}
-
-impl <B: hal::Backend> Drop for GfxAllocator<B> {
-    fn drop(&mut self) {
-        let device = &mut self.core.write().unwrap().device.device;
-
-        unsafe {
-            device.destroy_descriptor_pool(self.image_desc_pool.take().unwrap());
-            device.destroy_descriptor_pool(self.uniform_desc_pool.take().unwrap());
-        }
-    }
 }
 
 impl <B: hal::Backend> GfxAllocator<B> {
@@ -53,7 +47,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
                 .device
                 .device
                 .create_descriptor_pool(
-                    10,
+                    128,
                     &[
                         hal::pso::DescriptorRangeDesc {
                             ty: hal::pso::DescriptorType::Image {
@@ -61,7 +55,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
                                     with_sampler: true,
                                 }
                             },
-                            count: 10
+                            count: 128
                         }
                     ],
                     hal::pso::DescriptorPoolCreateFlags::empty()
@@ -357,77 +351,6 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         )
     }
 
-    fn alloc_texture(&mut self,
-                     _usage: hal::buffer::Usage,
-                     img_path: &String,
-                     sampler_desc: &hal::image::SamplerDesc,
-                     image_desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>) -> Texture<B> {
-        let image_desc_set = self.alloc_desc_set(image_desc_set_layout);
-
-        let row_alignment_mask = self.core.read().unwrap().backend.adapter.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
-        let texture_data = TextureData::load(img_path, row_alignment_mask);
-
-        let pixel_size = 4_usize;
-        let row_pitch = (texture_data.width * pixel_size as u32 + row_alignment_mask) & !row_alignment_mask;
-        let upload_size = (texture_data.height * row_pitch) as u64;
-
-        let image_upload_buffer = self.alloc_buffer(
-            &texture_data.data,
-            pixel_size as u64,
-            upload_size,
-            hal::buffer::Usage::TRANSFER_SRC,
-            hal::memory::Properties::CPU_VISIBLE | hal::memory::Properties::COHERENT
-        );
-
-        let image = self.alloc_image(
-            texture_data.width,
-            texture_data.height,
-            texture_data.format,
-            hal::image::Usage::TRANSFER_DST | hal::image::Usage::SAMPLED,
-            hal::format::Aspects::COLOR,
-        );
-
-        self.transfer_image(&image,
-                            image_upload_buffer,
-                            hal::image::Extent {
-                                width: texture_data.width,
-                                height: texture_data.height,
-                                depth: 1,
-                            },
-                            hal::image::Extent {
-                                width: row_pitch / (pixel_size as u32),
-                                height: texture_data.height,
-                                depth: 1,
-                            });
-
-        let sampler = self.run_with_device(|device| {
-            unsafe {
-                device.create_sampler(sampler_desc).expect("can't create sampler")
-            }
-        });
-
-        image_desc_set.write(
-            &mut self.core.write().unwrap().device.device,
-            vec![
-                DescSetWrite {
-                    binding: 0,
-                    array_offset: 0,
-                    descriptors: hal::pso::Descriptor::CombinedImageSampler(
-                        image.image_view.as_ref().unwrap(),
-                        hal::image::Layout::ShaderReadOnlyOptimal,
-                        &sampler
-                    )
-                }
-            ]
-        );
-
-        Texture::new(
-            image_desc_set,
-            Some(sampler),
-            image,
-        )
-    }
-
     fn alloc_image(&mut self,
         width: u32,
         height: u32,
@@ -494,6 +417,77 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         )
     }
 
+    fn alloc_texture(&mut self,
+                     _usage: hal::buffer::Usage,
+                     img_path: &String,
+                     sampler_desc: &hal::image::SamplerDesc,
+                     image_desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>) -> Texture<B> {
+        let image_desc_set = self.alloc_desc_set(DescriptorPoolType::Texture, image_desc_set_layout);
+
+        let row_alignment_mask = self.core.read().unwrap().backend.adapter.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
+        let texture_data = TextureData::load(img_path, row_alignment_mask);
+
+        let pixel_size = 4_usize;
+        let row_pitch = (texture_data.width * pixel_size as u32 + row_alignment_mask) & !row_alignment_mask;
+        let upload_size = (texture_data.height * row_pitch) as u64;
+
+        let image_upload_buffer = self.alloc_buffer(
+            &texture_data.data,
+            pixel_size as u64,
+            upload_size,
+            hal::buffer::Usage::TRANSFER_SRC,
+            hal::memory::Properties::CPU_VISIBLE | hal::memory::Properties::COHERENT
+        );
+
+        let image = self.alloc_image(
+            texture_data.width,
+            texture_data.height,
+            texture_data.format,
+            hal::image::Usage::TRANSFER_DST | hal::image::Usage::SAMPLED,
+            hal::format::Aspects::COLOR,
+        );
+
+        self.transfer_image(&image,
+                            image_upload_buffer,
+                            hal::image::Extent {
+                                width: texture_data.width,
+                                height: texture_data.height,
+                                depth: 1,
+                            },
+                            hal::image::Extent {
+                                width: row_pitch / (pixel_size as u32),
+                                height: texture_data.height,
+                                depth: 1,
+                            });
+
+        let sampler = self.run_with_device(|device| {
+            unsafe {
+                device.create_sampler(sampler_desc).expect("can't create sampler")
+            }
+        });
+
+        image_desc_set.write(
+            &mut self.core.write().unwrap().device.device,
+            vec![
+                DescSetWrite {
+                    binding: 0,
+                    array_offset: 0,
+                    descriptors: hal::pso::Descriptor::CombinedImageSampler(
+                        image.image_view.as_ref().unwrap(),
+                        hal::image::Layout::ShaderReadOnlyOptimal,
+                        &sampler
+                    )
+                }
+            ]
+        );
+
+        Texture::new(
+            image_desc_set,
+            Some(sampler),
+            image,
+        )
+    }
+
     fn alloc_desc_set_layout(&mut self, bindings: &[hal::pso::DescriptorSetLayoutBinding]) -> DescSetLayout<B> {
         let layout = self.run_with_device(|device| {
             unsafe {
@@ -508,9 +502,11 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         }
     }
 
-    fn alloc_desc_set(&mut self, desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>) -> DescSet<B> {
-        // TODO -> fix this
-        let descriptor_pool = self.uniform_desc_pool.as_mut().unwrap();
+    fn alloc_desc_set(&mut self, pool_type: DescriptorPoolType, desc_set_layout: &Arc<RwLock<DescSetLayout<B>>>) -> DescSet<B> {
+        let descriptor_pool = match pool_type {
+            DescriptorPoolType::Uniform => self.uniform_desc_pool.as_mut().unwrap(),
+            DescriptorPoolType::Texture => self.image_desc_pool.as_mut().unwrap(),
+        };
 
         let descriptor_set = unsafe {
             descriptor_pool
@@ -527,6 +523,17 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         DescSet {
             descriptor_set,
             desc_set_layout: Arc::clone(desc_set_layout),
+        }
+    }
+}
+
+impl <B: hal::Backend> Drop for GfxAllocator<B> {
+    fn drop(&mut self) {
+        let device = &mut self.core.write().unwrap().device.device;
+
+        unsafe {
+            device.destroy_descriptor_pool(self.image_desc_pool.take().unwrap());
+            device.destroy_descriptor_pool(self.uniform_desc_pool.take().unwrap());
         }
     }
 }
