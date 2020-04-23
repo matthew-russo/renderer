@@ -509,11 +509,11 @@ impl<B: hal::Backend> SxeSwapchain<B> {
     }
 
     fn next_sem_index(&mut self) {
+        self.current_sem_index += 1;
+
         if self.current_sem_index >= self.acquire_semaphores.len() {
             self.current_sem_index = 0
         }
-
-        self.current_sem_index += 1;
     }
 
     pub fn acquire_image(&mut self) -> Result<(u32, Option<hal::window::Suboptimal>), String> {

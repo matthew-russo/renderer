@@ -116,7 +116,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
                     )
                     .expect("Can't create staging command pool");
 
-                let cmds = self.transfer_image_cmd(&mut staging_pool,
+                let mut cmds = self.transfer_image_cmd(&mut staging_pool,
                                                    &image,
                                                    &image_upload_buffer,
                                                    image_extent,
@@ -131,12 +131,13 @@ impl <B: hal::Backend> GfxAllocator<B> {
                     .queues[0]
                     .submit_without_semaphores(Some(&cmds), Some(&mut image_transferred_fence));
 
-                image_upload_buffer.drop(device);
-                device.destroy_command_pool(staging_pool);
                 device.wait_for_fence(&image_transferred_fence, !0).unwrap();
+
+                device.destroy_command_pool(staging_pool);
+                image_upload_buffer.drop(device);
+                device.destroy_fence(image_transferred_fence);
             }
         });
-
     }
 
     fn transfer_image_cmd(&self,
