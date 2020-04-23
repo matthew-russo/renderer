@@ -7,7 +7,7 @@ use crate::primitives::uniform_buffer_object::{CameraUniformBufferObject, Object
 use crate::renderer::allocator::{COLOR_RANGE, Allocator, GfxAllocator, DescriptorPoolType};
 use crate::renderer::types::{Image, Uniform, Buffer, DescSetLayout};
 use crate::renderer::render_key::RenderKey;
-use crate::renderer::core::RendererCore;
+use crate::renderer::core::{RendererCore, run_with_device};
 use crate::utils::data_path;
 
 use cgmath::{Vector3, Matrix4};
@@ -353,25 +353,31 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
 
 impl <B: hal::Backend, A: Allocator<B>> Drop for GfxDrawer<B, A> {
     fn drop(&mut self) {
-        let mut writable_core = self.core.write().unwrap();
-        let raw_device = &mut writable_core.device.device;
-        self.texture_desc_set_layout.write().unwrap().deref_mut().drop(raw_device);
+        let mut desc_set_layout_writable = self.texture_desc_set_layout.write().unwrap();
+        let vertex_buffer = self.vertex_buffer.take();
+        let index_buffer = self.vertex_buffer.take();
+        let camera_uniform = &mut self.camera_uniform;
+        let object_uniform = &mut self.object_uniform;
+        let textures = self.textures.values_mut();
+        run_with_device(&self.core, |device| {
+            desc_set_layout_writable.deref_mut().drop(device);
 
-        match self.vertex_buffer.take() {
-            Some(mut vb) => vb.drop(raw_device),
-            None => (),
-        }
+            match vertex_buffer {
+                Some(mut vb) => vb.drop(device),
+                None => (),
+            }
 
-        match self.index_buffer.take() {
-            Some(mut ib) => ib.drop(raw_device),
-            None => (),
-        }
+            match index_buffer {
+                Some(mut ib) => ib.drop(device),
+                None => (),
+            }
 
-        self.camera_uniform.drop(raw_device);
-        self.object_uniform.drop(raw_device);
-        for texture in self.textures.values_mut() {
-            texture.drop(raw_device);
-        }
+            camera_uniform.drop(device);
+            object_uniform.drop(device);
+            for texture in textures {
+                texture.drop(device);
+            }
+        });
     }
 }
 
@@ -401,23 +407,15 @@ impl <B: hal::Backend> Drawer<B> for GfxDrawer<B, GfxAllocator<B>> {
         unsafe {
             let (framebuffer_fence, command_buffer) = self.framebuffers.get_frame_data(Some(image_index)).unwrap();
 
-            self
-                .core
-                .read()
-                .unwrap()
-                .device
-                .device
-                .wait_for_fence(framebuffer_fence, !0)
-                .unwrap();
+            run_with_device(&self.core, |device| {
+                device
+                    .wait_for_fence(framebuffer_fence, !0)
+                    .unwrap();
 
-            self
-                .core
-                .read()
-                .unwrap()
-                .device
-                .device
-                .reset_fence(framebuffer_fence)
-                .unwrap();
+                device
+                    .reset_fence(framebuffer_fence)
+                    .unwrap();
+            });
 
             let submission = hal::queue::Submission {
                 command_buffers: std::iter::once(&*command_buffer),
@@ -506,64 +504,62 @@ struct RenderPass<B: hal::Backend> {
 
 impl<B: hal::Backend> RenderPass<B> {
     fn new(core: &Arc<RwLock<RendererCore<B>>>, swapchain_format: hal::format::Format) -> Self {
-        let device = &core
-            .read()
-            .unwrap()
-            .device
-            .device;
+        run_with_device(core, |device| {
+            let color_attachment = hal::pass::Attachment {
+                format: Some(swapchain_format),
+                samples: 1,
+                ops: hal::pass::AttachmentOps::new(
+                    hal::pass::AttachmentLoadOp::Clear,
+                    hal::pass::AttachmentStoreOp::Store,
+                ),
+                stencil_ops: hal::pass::AttachmentOps::DONT_CARE,
+                layouts: hal::image::Layout::Undefined..hal::image::Layout::Present,
+            };
 
-        let color_attachment = hal::pass::Attachment {
-            format: Some(swapchain_format),
-            samples: 1,
-            ops: hal::pass::AttachmentOps::new(
-                hal::pass::AttachmentLoadOp::Clear,
-                hal::pass::AttachmentStoreOp::Store,
-            ),
-            stencil_ops: hal::pass::AttachmentOps::DONT_CARE,
-            layouts: hal::image::Layout::Undefined..hal::image::Layout::Present,
-        };
+            let depth_format = hal::format::Format::D32SfloatS8Uint;
+            let depth_attachment = hal::pass::Attachment {
+                format: Some(depth_format),
+                samples: 1,
+                ops: hal::pass::AttachmentOps::new(
+                    hal::pass::AttachmentLoadOp::Clear,
+                    hal::pass::AttachmentStoreOp::DontCare,
+                ),
+                stencil_ops: hal::pass::AttachmentOps::DONT_CARE,
+                layouts: hal::image::Layout::Undefined..hal::image::Layout::DepthStencilAttachmentOptimal,
+            };
 
-        let depth_format = hal::format::Format::D32SfloatS8Uint;
-        let depth_attachment = hal::pass::Attachment {
-            format: Some(depth_format),
-            samples: 1,
-            ops: hal::pass::AttachmentOps::new(
-                hal::pass::AttachmentLoadOp::Clear,
-                hal::pass::AttachmentStoreOp::DontCare,
-            ),
-            stencil_ops: hal::pass::AttachmentOps::DONT_CARE,
-            layouts: hal::image::Layout::Undefined..hal::image::Layout::DepthStencilAttachmentOptimal,
-        };
+            let subpass = hal::pass::SubpassDesc {
+                colors: &[(0, hal::image::Layout::ColorAttachmentOptimal)],
+                depth_stencil: Some(&(1, hal::image::Layout::DepthStencilAttachmentOptimal)),
+                inputs: &[],
+                resolves: &[],
+                preserves: &[],
+            };
 
-        let subpass = hal::pass::SubpassDesc {
-            colors: &[(0, hal::image::Layout::ColorAttachmentOptimal)],
-            depth_stencil: Some(&(1, hal::image::Layout::DepthStencilAttachmentOptimal)),
-            inputs: &[],
-            resolves: &[],
-            preserves: &[],
-        };
+            let dependency = hal::pass::SubpassDependency {
+                passes: hal::pass::SubpassRef::External..hal::pass::SubpassRef::Pass(0),
+                stages: hal::pso::PipelineStage::COLOR_ATTACHMENT_OUTPUT..hal::pso::PipelineStage::COLOR_ATTACHMENT_OUTPUT,
+                accesses: hal::image::Access::empty()..(hal::image::Access::COLOR_ATTACHMENT_READ | hal::image::Access::COLOR_ATTACHMENT_WRITE),
+                flags: hal::memory::Dependencies::empty(),
+            };
 
-        let dependency = hal::pass::SubpassDependency {
-            passes: hal::pass::SubpassRef::External..hal::pass::SubpassRef::Pass(0),
-            stages: hal::pso::PipelineStage::COLOR_ATTACHMENT_OUTPUT..hal::pso::PipelineStage::COLOR_ATTACHMENT_OUTPUT,
-            accesses: hal::image::Access::empty()..(hal::image::Access::COLOR_ATTACHMENT_READ | hal::image::Access::COLOR_ATTACHMENT_WRITE),
-            flags: hal::memory::Dependencies::empty(),
-        };
+            let render_pass = unsafe {
+                device.create_render_pass(&[color_attachment, depth_attachment], &[subpass], &[dependency])
+            }.expect("Can't create render pass");
 
-        let render_pass = unsafe {
-            device.create_render_pass(&[color_attachment, depth_attachment], &[subpass], &[dependency])
-        }.expect("Can't create render pass");
-
-        Self {
-            core: Arc::clone(core),
-            render_pass: Some(render_pass),
-        }
+            Self {
+                core: Arc::clone(core),
+                render_pass: Some(render_pass),
+            }
+        })
     }
 }
 
 impl<B: hal::Backend> Drop for RenderPass<B> {
     fn drop(&mut self) {
-        let device = &self.core.read().unwrap().device.device;
+        let device_lock = &self.core.read().unwrap().device.device;
+        let device = device_lock.write().unwrap();
+
         unsafe {
             device.destroy_render_pass(self.render_pass.take().unwrap());
         }
@@ -584,24 +580,22 @@ impl<B: hal::Backend> Pipeline<B> {
         vertex_shader: &str,
         fragment_shader: &str
     ) -> Self {
-        let device = &core
-            .read()
-            .unwrap()
-            .device
-            .device;
-
-        let pipeline_layout = device
-            .create_pipeline_layout(
-                descriptor_set_layouts,
-                &[(hal::pso::ShaderStageFlags::VERTEX, 0..8)],
-            )
-            .expect("Can't create pipeline layout");
+        let pipeline_layout = run_with_device(&core, |device| {
+            device
+                .create_pipeline_layout(
+                    descriptor_set_layouts,
+                    &[(hal::pso::ShaderStageFlags::VERTEX, 0..8)],
+                )
+                .expect("Can't create pipeline layout")
+        });
 
         let load_shader = |shader_path, shader_type| {
             let glsl = std::fs::read_to_string(data_path(shader_path)).unwrap();
             let mut spirv_file = glsl_to_spirv::compile(&glsl, shader_type).unwrap();
             let spirv = hal::pso::read_spirv(&mut spirv_file).unwrap();
-            device.create_shader_module(&spirv[..]).unwrap()
+            run_with_device(&core, |device| {
+                device.create_shader_module(&spirv[..]).unwrap()
+            })
         };
 
         let vs_module = load_shader(vertex_shader, glsl_to_spirv::ShaderType::Vertex);
@@ -689,12 +683,17 @@ impl<B: hal::Backend> Pipeline<B> {
                 stencil: None,
             };
 
-            device.create_graphics_pipeline(&pipeline_desc, None)
-        };
+            let pipeline = run_with_device(&core, |device| {
+                device.create_graphics_pipeline(&pipeline_desc, None)
+            });
 
-        // clean up shader resources
-        device.destroy_shader_module(vs_module);
-        device.destroy_shader_module(fs_module);
+            run_with_device(&core, |device| {
+                device.destroy_shader_module(vs_module);
+                device.destroy_shader_module(fs_module);
+            });
+
+            pipeline
+        };
 
         Self {
             core: Arc::clone(core),
@@ -706,7 +705,8 @@ impl<B: hal::Backend> Pipeline<B> {
 
 impl<B: hal::Backend> Drop for Pipeline<B> {
     fn drop(&mut self) {
-        let device = &self.core.read().unwrap().device.device;
+        let device_lock = &self.core.read().unwrap().device.device;
+        let device = device_lock.write().unwrap();
         unsafe {
             device.destroy_graphics_pipeline(self.pipeline.take().unwrap());
             device.destroy_pipeline_layout(self.pipeline_layout.take().unwrap());
@@ -734,25 +734,21 @@ impl<B: hal::Backend> Framebuffers<B> {
         depth_image: Image<B>
     ) -> Self
     {
-        // TODO -> create depth image for each frame
-
         let (frame_images, framebuffers) = {
             let pairs = images
                 .into_iter()
                 .map(|image| {
-                    let image_view = core
-                        .read()
-                        .unwrap()
-                        .device
-                        .device
-                        .create_image_view(
-                            &image,
-                            hal::image::ViewKind::D2,
-                            image_format,
-                            hal::format::Swizzle::NO,
-                            COLOR_RANGE.clone(),
-                        )
-                        .unwrap();
+                    let image_view = run_with_device(core, |device| {
+                        device
+                            .create_image_view(
+                                &image,
+                                hal::image::ViewKind::D2,
+                                image_format,
+                                hal::format::Swizzle::NO,
+                                COLOR_RANGE.clone(),
+                            )
+                            .unwrap()
+                    });
 
                     (image, image_view)
                 })
@@ -761,17 +757,15 @@ impl<B: hal::Backend> Framebuffers<B> {
             let fbos = pairs
                 .iter()
                 .map(|&(_, ref image_view)| {
-                    core
-                        .read()
-                        .unwrap()
-                        .device
-                        .device
-                        .create_framebuffer(
-                            render_pass.render_pass.as_ref().unwrap(),
-                            vec![image_view, depth_image.image_view.as_ref().unwrap()],
-                            extent,
-                        )
-                        .unwrap()
+                    run_with_device(core, |device| {
+                        device
+                            .create_framebuffer(
+                                render_pass.render_pass.as_ref().unwrap(),
+                                vec![image_view, depth_image.image_view.as_ref().unwrap()],
+                                extent,
+                            )
+                            .unwrap()
+                    })
                 })
                 .collect();
 
@@ -787,26 +781,23 @@ impl<B: hal::Backend> Framebuffers<B> {
         let mut fences: Vec<B::Fence> = vec![];
         let mut command_pools: Vec<B::CommandPool> = vec![];
 
-        for _ in 0..iter_count {
-            fences.push(core.read().unwrap().device.device.create_fence(true).unwrap());
-            command_pools.push(
-                core
-                    .read()
-                    .unwrap()
-                    .device
-                    .device
-                    .create_command_pool(
-                        core
-                            .read()
-                            .unwrap()
-                            .device
-                            .queue_group
-                            .family,
-                        hal::pool::CommandPoolCreateFlags::empty(),
-                    )
-                    .expect("Can't create command pool"),
-            );
-        }
+        run_with_device(core, |device| {
+            for _ in 0..iter_count {
+                fences.push(device.create_fence(true).unwrap());
+                command_pools.push(device
+                                       .create_command_pool(
+                                           core
+                                               .read()
+                                               .unwrap()
+                                               .device
+                                               .queue_group
+                                               .family,
+                                           hal::pool::CommandPoolCreateFlags::empty(),
+                                       )
+                                       .expect("Can't create command pool"),
+                );
+            }
+        });
 
         Self {
             core: Arc::clone(core),
@@ -817,6 +808,7 @@ impl<B: hal::Backend> Framebuffers<B> {
             command_buffers: None,
             depth_image,
         }
+
     }
 
     fn get_frame_data(
@@ -840,7 +832,8 @@ impl<B: hal::Backend> Framebuffers<B> {
 
 impl<B: hal::Backend> Drop for Framebuffers<B> {
     fn drop(&mut self) {
-        let device = &mut self.core.write().unwrap().device.device;
+        let device_lock = &mut self.core.write().unwrap().device.device;
+        let mut device = device_lock.write().unwrap();
 
         unsafe {
             for fence in self.framebuffer_fences.take().unwrap() {
@@ -860,7 +853,8 @@ impl<B: hal::Backend> Drop for Framebuffers<B> {
                 device.destroy_image_view(rtv);
             }
 
-            self.depth_image.drop(device);
+            self.depth_image.drop(device.deref_mut());
         }
     }
 }
+

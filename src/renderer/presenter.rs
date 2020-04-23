@@ -476,6 +476,8 @@ impl<B: hal::Backend> SxeSwapchain<B> {
                 .unwrap()
                 .device
                 .device
+                .read()
+                .unwrap()
                 .create_swapchain(writable_surface.as_mut().unwrap(), swap_config, None)
         }.expect("Can't create swapchain");
 
@@ -490,8 +492,8 @@ impl<B: hal::Backend> SxeSwapchain<B> {
         let mut present_semaphores = vec![];
 
         for _ in 0..iter_count {
-            acquire_semaphores.push(core.read().unwrap().device.device.create_semaphore().unwrap());
-            present_semaphores.push(core.read().unwrap().device.device.create_semaphore().unwrap());
+            acquire_semaphores.push(core.read().unwrap().device.device.read().unwrap().create_semaphore().unwrap());
+            present_semaphores.push(core.read().unwrap().device.device.read().unwrap().create_semaphore().unwrap());
         }
 
         Self {
@@ -554,7 +556,8 @@ impl<B: hal::Backend> SxeSwapchain<B> {
 impl <B: hal::Backend> Drop for SxeSwapchain<B> {
     fn drop(&mut self) {
         unsafe {
-            let device = &mut self.core.write().unwrap().device.device;
+            let device_lock = &mut self.core.write().unwrap().device.device;
+            let device = device_lock.write().unwrap();
 
             device.destroy_swapchain(self.swapchain.take().unwrap());
 

@@ -1,4 +1,4 @@
-use crate::renderer::core::RendererCore;
+use crate::renderer::core::{RendererCore, run_with_device};
 use crate::renderer::types::{Buffer, Uniform, Image, DescSetLayout, DescSet, DescSetWrite, Texture, TextureData};
 use std::sync::{Arc, RwLock};
 use hal::device::Device;
@@ -40,66 +40,60 @@ pub(crate) struct GfxAllocator<B: hal::Backend> {
 
 impl <B: hal::Backend> GfxAllocator<B> {
     pub fn new(core: &Arc<RwLock<RendererCore<B>>>) -> Self {
-        unsafe {
-            let image_desc_pool = core
-                .read()
-                .unwrap()
-                .device
-                .device
-                .create_descriptor_pool(
-                    128,
-                    &[
-                        hal::pso::DescriptorRangeDesc {
-                            ty: hal::pso::DescriptorType::Image {
-                                ty: hal::pso::ImageDescriptorType::Sampled {
-                                    with_sampler: true,
-                                }
-                            },
-                            count: 128
-                        }
-                    ],
-                    hal::pso::DescriptorPoolCreateFlags::empty()
-                )
-                .expect("Can't create descriptor pool");
+        run_with_device(core, |device| {
+            unsafe {
+                let image_desc_pool = device
+                    .create_descriptor_pool(
+                        128,
+                        &[
+                            hal::pso::DescriptorRangeDesc {
+                                ty: hal::pso::DescriptorType::Image {
+                                    ty: hal::pso::ImageDescriptorType::Sampled {
+                                        with_sampler: true,
+                                    }
+                                },
+                                count: 128
+                            }
+                        ],
+                        hal::pso::DescriptorPoolCreateFlags::empty()
+                    )
+                    .expect("Can't create descriptor pool");
 
-            // TODO -> render graph, not static
-            let uniform_desc_pool = core
-                .read()
-                .unwrap()
-                .device
-                .device
-                .create_descriptor_pool(
-                    2,
-                    &[
-                        hal::pso::DescriptorRangeDesc {
-                            ty: hal::pso::DescriptorType::Buffer {
-                                ty: hal::pso::BufferDescriptorType::Uniform,
-                                format: hal::pso::BufferDescriptorFormat::Structured {
-                                    dynamic_offset: false,
-                                }
+                // TODO -> render graph, not static
+                let uniform_desc_pool = device
+                    .create_descriptor_pool(
+                        2,
+                        &[
+                            hal::pso::DescriptorRangeDesc {
+                                ty: hal::pso::DescriptorType::Buffer {
+                                    ty: hal::pso::BufferDescriptorType::Uniform,
+                                    format: hal::pso::BufferDescriptorFormat::Structured {
+                                        dynamic_offset: false,
+                                    }
+                                },
+                                count: 1
                             },
-                            count: 1
-                        },
-                        hal::pso::DescriptorRangeDesc {
-                            ty: hal::pso::DescriptorType::Buffer {
-                                ty: hal::pso::BufferDescriptorType::Uniform,
-                                format: hal::pso::BufferDescriptorFormat::Structured {
-                                    dynamic_offset: true,
-                                }
-                            },
-                            count: 1
-                        }
-                    ],
-                    hal::pso::DescriptorPoolCreateFlags::empty()
-                )
-                .expect("Can't create descriptor pool");
+                            hal::pso::DescriptorRangeDesc {
+                                ty: hal::pso::DescriptorType::Buffer {
+                                    ty: hal::pso::BufferDescriptorType::Uniform,
+                                    format: hal::pso::BufferDescriptorFormat::Structured {
+                                        dynamic_offset: true,
+                                    }
+                                },
+                                count: 1
+                            }
+                        ],
+                        hal::pso::DescriptorPoolCreateFlags::empty()
+                    )
+                    .expect("Can't create descriptor pool");
 
-            Self {
-                core: Arc::clone(core),
-                image_desc_pool: Some(image_desc_pool),
-                uniform_desc_pool: Some(uniform_desc_pool),
+                Self {
+                    core: Arc::clone(core),
+                    image_desc_pool: Some(image_desc_pool),
+                    uniform_desc_pool: Some(uniform_desc_pool),
+                }
             }
-        }
+        })
     }
 
     fn transfer_image(&self,
@@ -108,7 +102,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
                       image_extent: hal::image::Extent,
                       buffer_extent: hal::image::Extent)
     {
-        self.run_with_device(|device| {
+        run_with_device(&self.core, |device| {
             unsafe {
                 let mut image_transferred_fence = device
                     .create_fence(false)
@@ -116,13 +110,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
 
                 let mut staging_pool = device
                     .create_command_pool(
-                        self
-                            .core
-                            .read()
-                            .unwrap()
-                            .device
-                            .queue_group
-                            .family,
+                        self.core.read().unwrap().device.queue_group.family,
                         hal::pool::CommandPoolCreateFlags::empty(),
                     )
                     .expect("Can't create staging command pool");
@@ -216,12 +204,6 @@ impl <B: hal::Backend> GfxAllocator<B> {
         }
     }
 
-    fn run_with_device<T>(&self, mut func: impl FnMut(&mut B::Device) -> T) -> T {
-        let mut writable_core = self.core.write().unwrap();
-        let raw_device = &mut writable_core.device.device;
-        func(raw_device)
-    }
-
     fn find_memory_type(&self, mem_reqs: hal::memory::Requirements, props: hal::memory::Properties) -> hal::MemoryTypeId {
         self
             .core
@@ -271,12 +253,12 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
             upload_size = min_size;
         }
 
-        let mut buffer = self.run_with_device(|device| {
+        let mut buffer = run_with_device(&self.core, |device| {
             unsafe {
                 device.create_buffer(upload_size, usage).unwrap()
             }
         });
-        let mem_req = self.run_with_device(|device| {
+        let mem_req = run_with_device(&self.core, |device| {
             unsafe {
                 device.get_buffer_requirements(&buffer)
             }
@@ -292,7 +274,7 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
             memory_properties,
         );
 
-        let memory = self.run_with_device(|device| {
+        let memory = run_with_device(&self.core, |device| {
             unsafe {
                 let memory = device
                     .allocate_memory(upload_type, mem_req.size)
@@ -333,17 +315,20 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
             hal::memory::Properties::CPU_VISIBLE,
         ));
 
-        desc.write(
-            &mut self.core.write().unwrap().device.device,
-            vec![DescSetWrite {
-                binding,
-                array_offset: 0,
-                descriptors: hal::pso::Descriptor::Buffer(
-                    buffer.as_ref().unwrap().get_buffer(),
-                    None..None,
-                )
-            }]
-        );
+        run_with_device(&self.core, |device| {
+            desc.write(
+                device,
+                vec![DescSetWrite {
+                    binding,
+                    array_offset: 0,
+                    descriptors: hal::pso::Descriptor::Buffer(
+                        buffer.as_ref().unwrap().get_buffer(),
+                        None..None,
+                    )
+                }]
+            );
+        });
+
 
         Uniform::new(
             buffer,
@@ -357,7 +342,7 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         format: hal::format::Format,
         usage: hal::image::Usage,
         aspects: hal::format::Aspects) -> Image<B> {
-        let mut image = self.run_with_device(|device| {
+        let mut image = run_with_device(&self.core, |device| {
             unsafe {
                 device.create_image(
                          hal::image::Kind::D2(width, height, 1, 1),
@@ -372,13 +357,13 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
 
         });
 
-        let image_req = self.run_with_device(|device| {
+        let image_req = run_with_device(&self.core, |device| {
             unsafe { device.get_image_requirements(&image) }
         });
 
         let device_type = self.find_memory_type(image_req, hal::memory::Properties::DEVICE_LOCAL);
 
-        let image_memory = self.run_with_device(|device| {
+        let image_memory = run_with_device(&self.core, |device| {
             unsafe {
                 let memory = device
                     .allocate_memory(device_type, image_req.size)
@@ -392,7 +377,7 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
             }
         });
 
-        let image_view = self.run_with_device(|device| {
+        let image_view = run_with_device(&self.core, |device| {
             unsafe {
                 device
                     .create_image_view(
@@ -460,26 +445,28 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
                                 depth: 1,
                             });
 
-        let sampler = self.run_with_device(|device| {
-            unsafe {
+        let sampler = run_with_device(&self.core, |device| {
+            let sampler = unsafe {
                 device.create_sampler(sampler_desc).expect("can't create sampler")
-            }
-        });
+            };
 
-        image_desc_set.write(
-            &mut self.core.write().unwrap().device.device,
-            vec![
-                DescSetWrite {
-                    binding: 0,
-                    array_offset: 0,
-                    descriptors: hal::pso::Descriptor::CombinedImageSampler(
-                        image.image_view.as_ref().unwrap(),
-                        hal::image::Layout::ShaderReadOnlyOptimal,
-                        &sampler
-                    )
-                }
-            ]
-        );
+            image_desc_set.write(
+                device,
+                vec![
+                    DescSetWrite {
+                        binding: 0,
+                        array_offset: 0,
+                        descriptors: hal::pso::Descriptor::CombinedImageSampler(
+                            image.image_view.as_ref().unwrap(),
+                            hal::image::Layout::ShaderReadOnlyOptimal,
+                            &sampler
+                        )
+                    }
+                ]
+            );
+
+            sampler
+        });
 
         Texture::new(
             image_desc_set,
@@ -489,7 +476,7 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
     }
 
     fn alloc_desc_set_layout(&mut self, bindings: &[hal::pso::DescriptorSetLayoutBinding]) -> DescSetLayout<B> {
-        let layout = self.run_with_device(|device| {
+        let layout = run_with_device(&self.core, |device| {
             unsafe {
                 device
                     .create_descriptor_set_layout(bindings, &[])
@@ -529,11 +516,13 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
 
 impl <B: hal::Backend> Drop for GfxAllocator<B> {
     fn drop(&mut self) {
-        let device = &mut self.core.write().unwrap().device.device;
-
-        unsafe {
-            device.destroy_descriptor_pool(self.image_desc_pool.take().unwrap());
-            device.destroy_descriptor_pool(self.uniform_desc_pool.take().unwrap());
-        }
+        let image_desc_pool = self.image_desc_pool.take().unwrap();
+        let uniform_desc_pool = self.uniform_desc_pool.take().unwrap();
+        run_with_device(&self.core, |device| {
+            unsafe {
+                device.destroy_descriptor_pool(image_desc_pool);
+                device.destroy_descriptor_pool(uniform_desc_pool);
+            }
+        })
     }
 }

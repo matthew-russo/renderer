@@ -1,4 +1,5 @@
 use std::sync::{Arc, RwLock};
+use std::ops::DerefMut;
 use hal::adapter::{MemoryType, PhysicalDevice};
 use hal::Instance;
 use hal::queue::QueueFamily;
@@ -29,6 +30,13 @@ impl RendererCore<back::Backend> {
             }
         }
     }
+}
+
+pub(crate) fn run_with_device<T, B: hal::Backend>(core: &Arc<RwLock<RendererCore<B>>>, func: impl FnOnce(&mut B::Device) -> T) -> T {
+    let mut writable_core = core.write().unwrap();
+    let raw_device_lock = &mut writable_core.device.device;
+    let mut raw_device = raw_device_lock.write().unwrap();
+    func(raw_device.deref_mut())
 }
 
 impl <B: hal::Backend> Drop for RendererCore<B> {
@@ -76,7 +84,7 @@ impl <B: hal::Backend> GfxAdapter<B> {
 
 
 pub(crate) struct GfxDevice<B: hal::Backend> {
-    pub device: B::Device,
+    pub device: Arc<RwLock<B::Device>>,
     pub physical_device: B::PhysicalDevice,
     pub queue_group: hal::queue::QueueGroup<B>,
     pub queue_family_index: Option<u32>,
@@ -107,7 +115,7 @@ impl <B: hal::Backend> GfxDevice<B> {
             .unwrap();
 
         Self {
-            device: gpu.device,
+            device: Arc::new(RwLock::new(gpu.device)),
             physical_device: adapter.physical_device,
             queue_group: gpu.queue_groups.pop().unwrap(),
             queue_family_index: family_index,

@@ -44,7 +44,8 @@ impl<B: hal::Backend> Buffer<B> {
         where T: Copy,
               T: std::fmt::Debug
     {
-        let device = &core.read().unwrap().device.device;
+        let device_lock = &core.read().unwrap().device.device;
+        let device = device_lock.read().unwrap();
         let upload_size = data_source.len() as u64 * self.padded_stride;
 
         assert!(offset + upload_size <= self.size);
