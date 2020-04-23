@@ -33,9 +33,8 @@ impl RendererCore<back::Backend> {
 }
 
 pub(crate) fn run_with_device<T, B: hal::Backend>(core: &Arc<RwLock<RendererCore<B>>>, func: impl FnOnce(&mut B::Device) -> T) -> T {
-    let mut writable_core = core.write().unwrap();
-    let raw_device_lock = &mut writable_core.device.device;
-    let mut raw_device = raw_device_lock.write().unwrap();
+    let mut device_lock = Arc::clone(&core.write().unwrap().device.device);
+    let mut raw_device = device_lock.write().unwrap();
     func(raw_device.deref_mut())
 }
 
@@ -81,7 +80,6 @@ impl <B: hal::Backend> GfxAdapter<B> {
         }
     }
 }
-
 
 pub(crate) struct GfxDevice<B: hal::Backend> {
     pub device: Arc<RwLock<B::Device>>,

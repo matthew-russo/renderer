@@ -213,7 +213,6 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
         self.index_buffer = Some(index_buffer);
     }
 
-
     unsafe fn generate_images(&mut self, textures: Vec<&crate::components::texture::Texture>) {
         let new_textures: Vec<&crate::components::texture::Texture> = textures
             .into_iter()
@@ -786,12 +785,7 @@ impl<B: hal::Backend> Framebuffers<B> {
                 fences.push(device.create_fence(true).unwrap());
                 command_pools.push(device
                                        .create_command_pool(
-                                           core
-                                               .read()
-                                               .unwrap()
-                                               .device
-                                               .queue_group
-                                               .family,
+                                           core.read().unwrap().device.queue_group.family,
                                            hal::pool::CommandPoolCreateFlags::empty(),
                                        )
                                        .expect("Can't create command pool"),
@@ -808,7 +802,6 @@ impl<B: hal::Backend> Framebuffers<B> {
             command_buffers: None,
             depth_image,
         }
-
     }
 
     fn get_frame_data(

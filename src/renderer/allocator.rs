@@ -102,6 +102,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
                       image_extent: hal::image::Extent,
                       buffer_extent: hal::image::Extent)
     {
+        let queue_family = self.core.read().unwrap().device.queue_group.family;
         run_with_device(&self.core, |device| {
             unsafe {
                 let mut image_transferred_fence = device
@@ -110,7 +111,7 @@ impl <B: hal::Backend> GfxAllocator<B> {
 
                 let mut staging_pool = device
                     .create_command_pool(
-                        self.core.read().unwrap().device.queue_group.family,
+                        queue_family,
                         hal::pool::CommandPoolCreateFlags::empty(),
                     )
                     .expect("Can't create staging command pool");
