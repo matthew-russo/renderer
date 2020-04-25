@@ -286,10 +286,16 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
             cmd_buffer.set_scissors(0, &[self.viewport.rect]);
 
             cmd_buffer.bind_graphics_pipeline(&self.pipeline.pipeline.as_ref().unwrap());
-            cmd_buffer.bind_vertex_buffers(0, Some((self.vertex_buffer.as_ref().unwrap().get_buffer(), 0)));
+            cmd_buffer.bind_vertex_buffers(0, Some((self.vertex_buffer.as_ref().unwrap().get_buffer(), hal::buffer::SubRange {
+                offset: 0,
+                size: None
+            })));
             cmd_buffer.bind_index_buffer(hal::buffer::IndexBufferView {
                 buffer: self.index_buffer.as_ref().unwrap().get_buffer(),
-                offset: 0,
+                range: hal::buffer::SubRange {
+                    offset: 0,
+                    size: None,
+                },
                 index_type: hal::IndexType::U32
             });
 
@@ -536,7 +542,7 @@ impl<B: hal::Backend> RenderPass<B> {
             };
 
             let dependency = hal::pass::SubpassDependency {
-                passes: hal::pass::SubpassRef::External..hal::pass::SubpassRef::Pass(0),
+                passes: None..Some(0),
                 stages: hal::pso::PipelineStage::COLOR_ATTACHMENT_OUTPUT..hal::pso::PipelineStage::COLOR_ATTACHMENT_OUTPUT,
                 accesses: hal::image::Access::empty()..(hal::image::Access::COLOR_ATTACHMENT_READ | hal::image::Access::COLOR_ATTACHMENT_WRITE),
                 flags: hal::memory::Dependencies::empty(),

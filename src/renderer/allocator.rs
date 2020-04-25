@@ -325,7 +325,10 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
                     array_offset: 0,
                     descriptors: hal::pso::Descriptor::Buffer(
                         buffer.as_ref().unwrap().get_buffer(),
-                        None..None,
+                        hal::buffer::SubRange {
+                            offset: 0,
+                            size: None,
+                        },
                     )
                 }]
             );

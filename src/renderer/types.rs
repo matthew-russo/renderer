@@ -51,7 +51,11 @@ impl<B: hal::Backend> Buffer<B> {
         assert!(offset + upload_size <= self.size);
 
         unsafe {
-            let mapping = device.map_memory(self.buffer_memory.as_ref().unwrap(), offset..upload_size).unwrap();
+            let mem_segment = hal::memory::Segment {
+                offset,
+                size: Some(upload_size),
+            };
+            let mapping = device.map_memory(self.buffer_memory.as_ref().unwrap(), mem_segment).unwrap();
 
             let data_as_bytes = data_source
                 .iter()

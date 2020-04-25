@@ -85,7 +85,7 @@ pub(crate) struct GfxDevice<B: hal::Backend> {
     pub device: Arc<RwLock<B::Device>>,
     pub physical_device: B::PhysicalDevice,
     pub queue_group: hal::queue::QueueGroup<B>,
-    pub queue_family_index: Option<u32>,
+    pub queue_family_id: Option<hal::queue::family::QueueFamilyId>,
 }
 
 impl <B: hal::Backend> GfxDevice<B> {
@@ -98,13 +98,13 @@ impl <B: hal::Backend> GfxDevice<B> {
             .unwrap();
 
         #[cfg(not(feature = "vulkan"))]
-            let family_index = None;
+        let family_id = None;
 
         #[cfg(feature = "vulkan")]
-            let family_index = {
+        let family_id = {
             let queue_family_any = family as &dyn std::any::Any;
             let back_queue_family: &back::QueueFamily = queue_family_any.downcast_ref().unwrap();
-            Some(back_queue_family.index)
+            Some(back_queue_family.id())
         };
 
         let mut gpu = adapter
@@ -116,7 +116,7 @@ impl <B: hal::Backend> GfxDevice<B> {
             device: Arc::new(RwLock::new(gpu.device)),
             physical_device: adapter.physical_device,
             queue_group: gpu.queue_groups.pop().unwrap(),
-            queue_family_index: family_index,
+            queue_family_id: family_id,
         }
     }
 }
