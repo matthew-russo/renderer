@@ -417,7 +417,7 @@ impl <B: hal::Backend> Allocator<B> for GfxAllocator<B> {
         let row_alignment_mask = self.core.read().unwrap().backend.adapter.limits.optimal_buffer_copy_pitch_alignment as u32 - 1;
         let texture_data = TextureData::load(img_path, row_alignment_mask);
 
-        let pixel_size = 4_usize;
+        let pixel_size = 1_usize;
         let row_pitch = (texture_data.width * pixel_size as u32 + row_alignment_mask) & !row_alignment_mask;
         let upload_size = (texture_data.height * row_pitch) as u64;
 

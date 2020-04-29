@@ -341,6 +341,7 @@ impl <B: hal::Backend> GfxDrawer<B, GfxAllocator<B>> {
                     );
 
                     let num_indices = mesh.indices.len() as u32;
+
                     cmd_buffer.draw_indexed(current_mesh_index..(current_mesh_index + num_indices), 0, 0..1);
                     current_mesh_index += num_indices;
                 }
