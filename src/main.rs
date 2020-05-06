@@ -68,28 +68,33 @@ use rand::Rng;
 
 use cgmath::Vector3;
 
-use crate::components::mesh::Mesh;
-use crate::components::transform::Transform;
-use crate::components::color::Color;
-use crate::components::texture::Texture;
-use crate::components::camera::Camera;
-use crate::components::config::Config;
-use crate::primitives::three_d::cube::Cube;
-use crate::primitives::drawable::Drawable;
+use crate::components::{
+    camera::Camera,
+    color::Color,
+    config::Config,
+    mesh::Mesh,
+    texture::Texture,
+    transform::Transform,
+};
+use crate::primitives::{
+    drawable::Drawable,
+    three_d::cube::Cube,
+    uniform_buffer_object::ObjectUniformBufferObject,
+};
 use crate::timing::Time;
 use crate::systems::rotation::Rotation;
 use crate::events::event_handler::EventHandler;
-// use crate::xr::xr::Xr;
 
 use legion::Universe;
 use legion::query::{Read, Write, IntoQuery, Query};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::ControlFlow;
-use crate::renderer::core::RendererCore;
-use crate::renderer::allocator::{GfxAllocator};
-use crate::renderer::drawer::{Drawer, GfxDrawer};
-use crate::renderer::presenter::{Presenter, MonitorPresenter};
-use crate::primitives::uniform_buffer_object::ObjectUniformBufferObject;
+use crate::renderer::{
+    core::RendererCore,
+    allocator::GfxAllocator,
+    drawer::{Drawer, GfxDrawer},
+    presenter::{Presenter, MonitorPresenter, XrPresenter}
+};
 
 fn main() {
     env_logger::init();

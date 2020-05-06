@@ -10,6 +10,7 @@ metal = ["gfx-backend-metal"]
 gl = ["gfx-backend-gl"]
 dx12 = ["gfx-backend-dx12"]
 vulkan = ["gfx-backend-vulkan"]
+xr = []
 
 [dependencies]
 itertools = "0.8.2"

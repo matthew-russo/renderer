@@ -1,11 +1,12 @@
 use std::sync::{Arc, RwLock};
-use hal::window::{Extent2D, Surface};
-use hal::device::Device;
-use crate::renderer::core::RendererCore;
-use crate::renderer::allocator::{Allocator, GfxAllocator};
-use ash::vk;
+use std::ops::Deref;
 use std::path::Path;
 use std::ffi::c_void;
+use hal::window::{Extent2D, Surface};
+use hal::device::Device;
+use ash::vk;
+use crate::renderer::core::RendererCore;
+use crate::renderer::allocator::{Allocator, GfxAllocator};
 
 pub const DIMS: Extent2D = Extent2D { width: 1024, height: 768 };
 const VK_FORMAT_R8G8B8A8_SRGB: u32 = 43;
@@ -139,9 +140,10 @@ impl VulkanXrSession {
             .map(|raw_image_ptr| {
                 use ash::vk::Handle;
 
+                // need to do this somewhere? VK_FORMAT_R8G8B8A8_SRGB
                 gfx_backend_vulkan::native::Image {
                     raw: vk::Image::from_raw(*raw_image_ptr),
-                    ty: vk::ImageType::from_raw(VK_FORMAT_R8G8B8A8_SRGB as i32),
+                    ty: vk::ImageType::TYPE_2D,
                     flags: vk::ImageCreateFlags::empty(),
                     extent: vk::Extent3D {
                         width: resolution.width as u32,
@@ -191,13 +193,28 @@ pub(crate) struct XrPresenter<B: hal::Backend, A: Allocator<B>> {
 }
 
 impl <B: hal::Backend> XrPresenter<B, GfxAllocator<B>> {
-    fn session_create_info() -> VulkanXrSessionCreateInfo {
-        unimplemented!()
+    fn session_create_info(core: &Arc<RwLock<RendererCore<B>>>) -> VulkanXrSessionCreateInfo {
+        use ash::version::InstanceV1_0;
+        let physical_device  = &core.read().unwrap().device.physical_device;
+        let physical_device_any = physical_device as &dyn std::any::Any;
+        let back_physical_device: &back::PhysicalDevice = physical_device_any.downcast_ref().unwrap();
+
+        let gfx_device = &core.read().unwrap().device;
+        let device = gfx_device.device.read().unwrap();
+        let device_any = device.deref() as &dyn std::any::Any;
+        let back_device: &back::Device = device_any.downcast_ref().unwrap();
+        VulkanXrSessionCreateInfo {
+            instance: back_physical_device.instance.0.handle(),
+            physical_device: back_physical_device.handle,
+            device: back_device.shared.raw.handle(),
+            queue_family_index: core.read().unwrap().device.queue_family_id.unwrap().0 as u32,
+            queue_index: 0,
+        }
     }
 
-    fn new(core: &Arc<RwLock<RendererCore<B>>>, allocator: &Arc<RwLock<GfxAllocator<B>>>) -> Self {
+    pub(crate) fn new(core: &Arc<RwLock<RendererCore<B>>>, allocator: &Arc<RwLock<GfxAllocator<B>>>) -> Self {
         let mut vulkan_xr_session = OpenXr::init()
-            .create_vulkan_session(Self::session_create_info())
+            .create_vulkan_session(Self::session_create_info(core))
             .unwrap();
         vulkan_xr_session.create_swapchain();
         let viewport = Self::create_viewport(&vulkan_xr_session);
@@ -225,17 +242,15 @@ impl <B: hal::Backend> XrPresenter<B, GfxAllocator<B>> {
     }
 }
 
-impl <B: hal::Backend> Presenter<B> for XrPresenter<B, GfxAllocator<B>> {
-    fn images(&mut self) -> (Vec<B::Image>, hal::format::Format) {
-        unimplemented!()
-        // TODO -> issue with generics
-        // (
-        //     self.vulkan_xr_session.swapchain_images.take().unwrap(),
-        //     self.vulkan_xr_session.swapchain_format.clone()
-        // )
+impl Presenter<gfx_backend_vulkan::Backend> for XrPresenter<gfx_backend_vulkan::Backend, GfxAllocator<gfx_backend_vulkan::Backend>> {
+    fn images(&mut self) -> (Vec<gfx_backend_vulkan::native::Image>, hal::format::Format) {
+        (
+            self.vulkan_xr_session.swapchain_images.take().unwrap(),
+            self.vulkan_xr_session.swapchain_format.clone()
+        )
     }
 
-    fn semaphores(&mut self) -> (&B::Semaphore, &B::Semaphore) {
+    fn semaphores(&mut self) -> (&gfx_backend_vulkan::native::Semaphore, &gfx_backend_vulkan::native::Semaphore) {
         unimplemented!()
     }
 
