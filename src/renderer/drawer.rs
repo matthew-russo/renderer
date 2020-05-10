@@ -24,7 +24,7 @@ use crate::renderer::presenter::DIMS;
 use std::ops::DerefMut;
 
 pub(crate) trait Drawer<B: hal::Backend> : Send + Sync {
-    fn draw(&mut self, image_index: usize, acquire_semaphore: &B::Semaphore, present_semaphore: &B::Semaphore);
+    fn draw(&mut self, image_index: usize, acquire_semaphore: Option<&B::Semaphore>, present_semaphore: Option<&B::Semaphore>);
     fn update_drawables(&mut self, drawables: Vec<Drawable>) -> Result<(), String>;
     fn update_uniforms(&mut self, uniforms: Vec<ObjectUniformBufferObject>) -> Result<(), String>;
     fn update_camera(&mut self, transform: Transform) -> Result<(), String>;
@@ -409,7 +409,7 @@ pub fn fps_view_matrix(eye: Vector3<f32>, pitch_rad: cgmath::Rad<f32>, yaw_rad: 
 }
 
 impl <B: hal::Backend> Drawer<B> for GfxDrawer<B, GfxAllocator<B>> {
-    fn draw(&mut self, image_index: usize, acquire_semaphore: &B::Semaphore, present_semaphore: &B::Semaphore) {
+    fn draw(&mut self, image_index: usize, acquire_semaphore: Option<&B::Semaphore>, present_semaphore: Option<&B::Semaphore>) {
         unsafe {
             let (framebuffer_fence, command_buffer) = self.framebuffers.get_frame_data(Some(image_index)).unwrap();
 
@@ -423,20 +423,35 @@ impl <B: hal::Backend> Drawer<B> for GfxDrawer<B, GfxAllocator<B>> {
                     .unwrap();
             });
 
-            let submission = hal::queue::Submission {
-                command_buffers: std::iter::once(&*command_buffer),
-                wait_semaphores: std::iter::once((&*acquire_semaphore, hal::pso::PipelineStage::BOTTOM_OF_PIPE)),
-                signal_semaphores: std::iter::once(&*present_semaphore),
-            };
+            match (acquire_semaphore, present_semaphore) {
+                (None, None) => {
+                    self
+                        .core
+                        .write()
+                        .unwrap()
+                        .device
+                        .queue_group
+                        .queues[0]
+                        .submit_without_semaphores(std::iter::once(&*command_buffer), Some(framebuffer_fence));
+                },
+                (Some(acquire_semaphore), Some(present_semaphore)) => {
+                    let submission = hal::queue::Submission {
+                        command_buffers: std::iter::once(&*command_buffer),
+                        wait_semaphores: std::iter::once((&*acquire_semaphore, hal::pso::PipelineStage::BOTTOM_OF_PIPE)),
+                        signal_semaphores: std::iter::once(&*present_semaphore),
+                    };
 
-            self
-                .core
-                .write()
-                .unwrap()
-                .device
-                .queue_group
-                .queues[0]
-                .submit(submission, Some(framebuffer_fence));
+                    self
+                        .core
+                        .write()
+                        .unwrap()
+                        .device
+                        .queue_group
+                        .queues[0]
+                        .submit(submission, Some(framebuffer_fence));
+                },
+                x => panic!("only one semaphore present, dont know what to do: {:?}", x)
+            }
         }
     }
 

@@ -15,7 +15,7 @@ type ImageIndex = u32;
 
 pub(crate) trait Presenter<B: hal::Backend> : Send + Sync {
     fn images(&mut self) -> (Vec<B::Image>, hal::format::Format);
-    fn semaphores(&mut self) -> (&B::Semaphore, &B::Semaphore);
+    fn semaphores(&mut self) -> (Option<&B::Semaphore>, Option<&B::Semaphore>);
     fn acquire_image(&mut self) -> Result<u32, String>;
     fn present(&mut self) -> Result<(), String>;
     fn viewport(&self) -> hal::pso::Viewport;
@@ -78,6 +78,10 @@ impl OpenXr {
                 .instance
                 .create_session(self.system_id, &create_info)
                 .map_err(|e| e.to_string())?;
+
+            session
+                .begin(openxr::ViewConfigurationType::PRIMARY_STEREO)
+                .unwrap();
 
             Ok(VulkanXrSession {
                 openxr: self,
@@ -250,8 +254,8 @@ impl Presenter<gfx_backend_vulkan::Backend> for XrPresenter<gfx_backend_vulkan::
         )
     }
 
-    fn semaphores(&mut self) -> (&gfx_backend_vulkan::native::Semaphore, &gfx_backend_vulkan::native::Semaphore) {
-        unimplemented!()
+    fn semaphores(&mut self) -> (Option<&gfx_backend_vulkan::native::Semaphore>, Option<&gfx_backend_vulkan::native::Semaphore>) {
+        (None, None)
     }
 
     fn acquire_image(&mut self) -> Result<u32, String> {
@@ -387,10 +391,10 @@ impl <B: hal::Backend> Presenter<B> for MonitorPresenter<B, GfxAllocator<B>> {
         )
     }
 
-    fn semaphores(&mut self) -> (&B::Semaphore, &B::Semaphore) {
+    fn semaphores(&mut self) -> (Option<&B::Semaphore>, Option<&B::Semaphore>) {
         (
-            &self.swapchain.acquire_semaphores[self.swapchain.current_sem_index],
-            &self.swapchain.present_semaphores[self.swapchain.current_sem_index],
+            Some(&self.swapchain.acquire_semaphores[self.swapchain.current_sem_index]),
+            Some(&self.swapchain.present_semaphores[self.swapchain.current_sem_index]),
         )
     }
 
